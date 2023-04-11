@@ -51,6 +51,7 @@ name = "hmeasure"
 version = "0.0.1"
 dependencies = [
  "array2d",
+ "quadrature",
  "rand",
  "rand_distr",
  "statrs",
@@ -172,6 +173,12 @@ checksum = "2b63bdb0cd06f1f4dedf69b254734f9b45af66e4a031e42a7480257d9898b435"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "quadrature"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2054ccb02f454fcb2bc81e343aa0a171636a6331003fd5ec24c47a10966634b7"
 
 [[package]]
 name = "quote"
