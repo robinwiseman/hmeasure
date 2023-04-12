@@ -46,8 +46,11 @@ pub struct HMeasure{
 #[derive(Debug)]
 pub struct HMeasureResults{
     pub h: f64,
-    pub convex_hull: Array2D<f64>,
-    pub roc_curve: Array2D<f64>
+    pub convex_hull: Vec<Vec<f64>>,
+    pub roc_curve: Vec<Vec<f64>>,
+    pub int_components: Vec<Vec<f64>>,
+    pub class0_score: Vec<f64>,
+    pub class1_score: Vec<f64>
 }
 
 pub trait SaveData<File> {
@@ -56,7 +59,10 @@ pub trait SaveData<File> {
 
 impl<File: Write> SaveData<File> for Vec<f64>{
     fn save(&self, f: &mut File){
-        for element in self {
+        let sep = ",";
+        for (idx, element) in self.iter().enumerate() {
+                f.write_all(idx.to_string().as_bytes()).expect("the unexpected");
+                f.write_all(sep.as_bytes()).expect("the unexpected");
                 f.write_all(element.to_string().as_bytes()).expect("the unexpected");
                 f.write_all(b"\n").expect("the unexpected");
             }
@@ -71,10 +77,14 @@ impl<File: Write> SaveData<File> for Array2D<f64>{
         let sep = ",";
         while i < num_rows {
             let mut j = 0;
+            f.write_all(i.to_string().as_bytes()).expect("the unexpected");
+            f.write_all(sep.as_bytes()).expect("the unexpected");
             while j < num_cols {
                 let element = self[(i,j)];
                 f.write_all(element.to_string().as_bytes()).expect("the unexpected");
-                f.write_all(sep.as_bytes()).expect("the unexpected");
+                if j < num_cols-1 {
+                    f.write_all(sep.as_bytes()).expect("the unexpected");
+                }
                 j += 1;
             }
             f.write_all(b"\n").expect("the unexpected");
@@ -82,6 +92,31 @@ impl<File: Write> SaveData<File> for Array2D<f64>{
         }
     }
 }
+
+impl<File: Write> SaveData<File> for Vec<Vec<f64>>{
+    fn save(&self, f: &mut File){
+        let num_rows = self.len();
+        let num_cols = self[0].len();
+        let mut i = 0;
+        let sep = ",";
+        while i < num_rows {
+            let mut j = 0;
+            f.write_all(i.to_string().as_bytes()).expect("the unexpected");
+            f.write_all(sep.as_bytes()).expect("the unexpected");
+            while j < num_cols {
+                let element = self[i][j];
+                f.write_all(element.to_string().as_bytes()).expect("the unexpected");
+                if j < num_cols-1 {
+                    f.write_all(sep.as_bytes()).expect("the unexpected");
+                }
+                j += 1;
+            }
+            f.write_all(b"\n").expect("the unexpected");
+            i += 1;
+        }
+    }
+}
+
 
 pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str){
     let f = &mut OpenOptions::new()
@@ -98,9 +133,19 @@ pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str){
 impl HMeasureResults{
     pub fn save(&self, result_set: &str, filepath: &str){
         let chull_name = self.result_set_path("ch", filepath, result_set);
-        write_vec(&self.convex_hull, chull_name.as_str(), "chull");
+        write_vec(&self.convex_hull, chull_name.as_str(), "idx,chull0,chull1");
+
         let roc_name = self.result_set_path("rc", filepath, result_set);
-        write_vec(&self.roc_curve, roc_name.as_str(), "roc");
+        write_vec(&self.roc_curve, roc_name.as_str(), "idx,roc0,roc1");
+
+        let intcomp_name = self.result_set_path("ic", filepath, result_set);
+        write_vec(&self.int_components, intcomp_name.as_str(), "idx,ic0,ic1,ic2,ic3");
+
+        let score0_name = self.result_set_path("s0", filepath, result_set);
+        write_vec(&self.class0_score, score0_name.as_str(), "idx,score");
+
+        let score1_name = self.result_set_path("s1", filepath, result_set);
+        write_vec(&self.class1_score, score1_name.as_str(), "idx,score");
     }
     pub fn result_set_path(&self, set_name: &str, filepath: &str, resultset: &str) -> String{
         let name = format!("{}/{}_{}.csv", filepath, set_name, resultset);
@@ -136,9 +181,14 @@ impl HMeasure{
         self.h = self._build_h(&int_components);
 
         let h = self.h.unwrap();
+        let class0_score = scores.class0.clone();
+        let class1_score = scores.class1.clone();
         HMeasureResults{ h,
                         convex_hull,
-                        roc_curve
+                        roc_curve,
+                        int_components,
+                        class0_score,
+                        class1_score
         }
     }
 
@@ -181,11 +231,11 @@ impl HMeasure{
         (c_scores, c_classes)
     }
 
-    fn build_roc(&self, c_scores: &Vec<f64>, c_classes: &Vec<u8>) -> Array2D<f64> {
+    fn build_roc(&self, c_scores: &Vec<f64>, c_classes: &Vec<u8>) -> Vec<Vec<f64>> {
         let num_rows = c_scores.len();
-        let num_cols = 2;
-        let mut roc_points = Array2D::filled_with(0.0, num_rows, num_cols);
+        let mut roc_points: Vec<Vec<f64>> = vec![];
         let mut roc_point = [0.0, 0.0];
+        roc_points.push(vec![roc_point[0], roc_point[1]]);
         let mut i = 0;
         while i < num_rows {
             let i_score = c_scores[i];
@@ -193,8 +243,7 @@ impl HMeasure{
             let duplicate_i = duplicate_0 + duplicate_1;
             roc_point[0] += duplicate_1 as f64 / self.c1_num.unwrap_or(1) as f64;
             roc_point[1] += duplicate_0 as f64 / self.c0_num.unwrap_or(1) as f64;
-            roc_points[(i,0)] = roc_point[0];
-            roc_points[(i,1)] = roc_point[1];
+            roc_points.push(vec![roc_point[0], roc_point[1]]);
             i += duplicate_i;
         }
         roc_points
@@ -217,10 +266,9 @@ impl HMeasure{
         (dup_class_0.len(), dup_class_1.len())
     }
 
-    fn build_chull(&self, roc_c: &Array2D<f64>) -> (Array2D<f64>, Vec<Vec<f64>>) {
-        let num_rows = roc_c.column_len();
-        let num_cols = roc_c.row_len();
-        let mut chull = Array2D::filled_with(0.0, num_rows, num_cols);
+    fn build_chull(&self, roc_c: &Vec<Vec<f64>>) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let num_rows = roc_c.len();
+        let mut chull: Vec<Vec<f64>> = vec![];
         let mut int_components: Vec<Vec<f64>> = vec![];
         let mut cval_loc_prior = [0.0, 0.0];
         let mut cval_prior = 0.0;
@@ -228,24 +276,25 @@ impl HMeasure{
         while i < num_rows-1 {
             let cvals = self._cvals(&roc_c, i);
             let c_argmin = HMeasure::argmin(&cvals);
-            let cval_loc = [roc_c[(i+c_argmin+1,0)],roc_c[(i+c_argmin+1,1)]];
-            chull[(i+1,0)] = cval_loc[0];
-            chull[(i+1,1)] = cval_loc[1];
+            let cval_loc = [roc_c[i+c_argmin+1][0],roc_c[i+c_argmin+1][1]];
+            chull.push(vec![cval_loc[0],cval_loc[1]]);
             int_components.push(vec![cvals[c_argmin], cval_prior, cval_loc_prior[0], cval_loc_prior[1]]);
             cval_loc_prior = cval_loc;
             cval_prior = cvals[c_argmin];
             i += c_argmin+1;
         }
 
+        int_components.push(vec![1.0, cval_prior, cval_loc_prior[0], cval_loc_prior[1]]);
+
         (chull, int_components)
     }
 
-    fn _cvals(&self, roc_c: &Array2D<f64>, current_idx: usize) -> Vec<f64> {
+    fn _cvals(&self, roc_c: &Vec<Vec<f64>>, current_idx: usize) -> Vec<f64> {
         let mut cvals: Vec<f64> = vec![];
-        let current_point: [f64;2] = [roc_c[(current_idx,0)],roc_c[(current_idx,1)]];
+        let current_point: [f64;2] = [roc_c[current_idx][0],roc_c[current_idx][1]];
         let mut i_point_idx = current_idx + 1;
-        while i_point_idx < roc_c.column_len() {
-            let i_point: [f64;2] = [roc_c[(i_point_idx,0)],roc_c[(i_point_idx,1)]];
+        while i_point_idx < roc_c.len() {
+            let i_point: [f64;2] = [roc_c[i_point_idx][0],roc_c[i_point_idx][1]];
             cvals.push(self._cval(&current_point, &i_point));
             i_point_idx += 1;
         }

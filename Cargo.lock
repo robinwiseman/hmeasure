@@ -53,6 +53,7 @@ dependencies = [
  "array2d",
  "quadrature",
  "rand",
+ "rand_chacha",
  "rand_distr",
  "statrs",
 ]
