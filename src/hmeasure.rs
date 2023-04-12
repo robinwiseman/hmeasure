@@ -1,3 +1,6 @@
+use std::io::Write;
+use std::fs::{OpenOptions, File};
+
 use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use array2d::Array2D;
 use quadrature::double_exponential;
@@ -43,7 +46,66 @@ pub struct HMeasure{
 #[derive(Debug)]
 pub struct HMeasureResults{
     pub h: f64,
-    pub convex_hull: Array2D<f64>
+    pub convex_hull: Array2D<f64>,
+    pub roc_curve: Array2D<f64>
+}
+
+pub trait SaveData<File> {
+    fn save(&self, f: &mut File);
+}
+
+impl<File: Write> SaveData<File> for Vec<f64>{
+    fn save(&self, f: &mut File){
+        for element in self {
+                f.write_all(element.to_string().as_bytes()).expect("the unexpected");
+                f.write_all(b"\n").expect("the unexpected");
+            }
+    }
+}
+
+impl<File: Write> SaveData<File> for Array2D<f64>{
+    fn save(&self, f: &mut File){
+        let num_rows = self.column_len();
+        let num_cols = self.row_len();
+        let mut i = 0;
+        let sep = ",";
+        while i < num_rows {
+            let mut j = 0;
+            while j < num_cols {
+                let element = self[(i,j)];
+                f.write_all(element.to_string().as_bytes()).expect("the unexpected");
+                f.write_all(sep.as_bytes()).expect("the unexpected");
+                j += 1;
+            }
+            f.write_all(b"\n").expect("the unexpected");
+            i += 1;
+        }
+    }
+}
+
+pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str){
+    let f = &mut OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(filepath)
+        .expect("the unexpected");
+
+    f.write_all(header.as_bytes()).expect("the unexpected");
+    f.write_all(b"\n").expect("the unexpected");
+    vec.save(f)
+}
+
+impl HMeasureResults{
+    pub fn save(&self, result_set: &str, filepath: &str){
+        let chull_name = self.result_set_path("ch", filepath, result_set);
+        write_vec(&self.convex_hull, chull_name.as_str(), "chull");
+        let roc_name = self.result_set_path("rc", filepath, result_set);
+        write_vec(&self.roc_curve, roc_name.as_str(), "roc");
+    }
+    pub fn result_set_path(&self, set_name: &str, filepath: &str, resultset: &str) -> String{
+        let name = format!("{}/{}_{}.csv", filepath, set_name, resultset);
+        name
+    }
 }
 
 impl HMeasure{
@@ -58,28 +120,29 @@ impl HMeasure{
         }
     }
 
-    pub fn h_measure(&mut self, scores: BinaryClassScores) -> HMeasureResults {
-        let mut c0_scores = scores.class0;
-        let mut c1_scores = scores.class1;
-        self.c0_num = Some(c0_scores.len());
-        self.c1_num = Some(c1_scores.len());
+    pub fn h_measure(&mut self, scores: &mut BinaryClassScores) -> HMeasureResults {
+        self.c0_num = Some(scores.class0.len());
+        self.c1_num = Some(scores.class1.len());
         let num_scores = self.c0_num.unwrap_or(0)+self.c1_num.unwrap_or(0);
         if self.class0_prior.is_none() || self.class1_prior.is_none() {
             self.class0_prior = Some(self.c0_num.unwrap_or(0) as f64/num_scores as f64);
             self.class1_prior = Some(self.c1_num.unwrap_or(0) as f64/num_scores as f64);
         }
-        c0_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        c1_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let (c_scores, c_classes) = self.merge_scores(c0_scores, c1_scores);
+        scores.class0.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        scores.class1.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (c_scores, c_classes) = self.merge_scores(&scores.class0, &scores.class1);
         let roc_curve = self.build_roc(&c_scores, &c_classes);
         let (convex_hull, int_components) = self.build_chull(&roc_curve);
         self.h = self._build_h(&int_components);
 
         let h = self.h.unwrap();
-        HMeasureResults{ h, convex_hull }
+        HMeasureResults{ h,
+                        convex_hull,
+                        roc_curve
+        }
     }
 
-    fn merge_scores(&self, c0: Vec<f64>, c1: Vec<f64>) -> (Vec<f64>, Vec<u8>) {
+    fn merge_scores(&self, c0: &Vec<f64>, c1: &Vec<f64>) -> (Vec<f64>, Vec<u8>) {
         let mut c0_i = 0;
         let mut c1_i = 0;
         let mut cm_i = 0;
@@ -210,6 +273,7 @@ impl HMeasure{
     fn _build_h(&self, int_components: &Vec<Vec<f64>>) -> Option<f64> {
         let l = self._build_l(&int_components).unwrap();
         let l_max = self._l_max().unwrap();
+        // println!("l : l_max ~ {:?} : {:?}", l, l_max);
         Some(1.0-l/l_max)
     }
 
