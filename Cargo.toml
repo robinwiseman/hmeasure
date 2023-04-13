@@ -2,6 +2,13 @@
 name = "hmeasure"
 version = "0.0.1"
 edition = "2021"
+license = "MIT"
+description = "A Rust implementation of the H-Measure for assessing binary classifiers."
+homepage = "https://github.com/robinwiseman/hmeasure"
+repository = "https://github.com/robinwiseman/hmeasure"
+readme = "README.md"
+keywords = ["classifier", "H-Measure", "AUC", "ROC"]
+authors = ["Robin D. Wiseman"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,3 +19,4 @@ rand_chacha = "0.3.1"
 rand_distr = "0.4.3"
 quadrature = "0.1.2"
 statrs = "0.16.0"
+
