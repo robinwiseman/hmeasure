@@ -15,7 +15,7 @@ use array2d::Array2D;
 use quadrature::double_exponential;
 
 use crate::datagen;
-use datagen::{BetaParams, BinaryClassScores, BinaryClassifierScores, BinaryClassParams};
+use datagen::{BetaParams, BinaryClassScores};
 
 /**
 CostRatioDensity: a struct to enable generating cost distributions using the Beta distribution
@@ -403,36 +403,41 @@ impl HMeasure{
     }
 }
 
-#[test]
-fn assert_low_hmeasure(){
-    // Choose class0 and class1 to have identical score distributions => the classifier model that generated the
-    // scores is unable to discriminate between class0 and class1 (it is poor model). Demonstrate near-zero
-    // H-Measure in this case
-    let mut c0_a: f64 = 4.0;
-    let mut c1_a: f64 = 4.0;
-    let mut c0_b: f64 = 4.0;
-    let mut c1_b: f64 = 4.0;
-    let c0_n: usize = 2000;
-    let c1_n: usize = 2000;
-    // seed the random number generator for reproducibility.
-    let mut rng = BinaryClassifierScores::generate_rng(13);
-    // generate dummy score data for the pair of binary classes: class0 and class1
-    let class0_params = BetaParams { alpha: c0_a, beta: c0_b };
-    let class1_params = BetaParams { alpha: c1_a, beta: c1_b };
-    let bcp = &BinaryClassParams { class0: class0_params, class1: class1_params };
-    let mut bcs = BinaryClassifierScores::new(&bcp, c0_n, c1_n, &mut rng);
+#[cfg(test)]
+mod tests {
+    use super::{CostRatioDensity,HMeasure};
+    use super::datagen::{BetaParams, BinaryClassifierScores, BinaryClassParams};
+    #[test]
+    fn assert_low_hmeasure() {
+        // Choose class0 and class1 to have identical score distributions => the classifier model that generated the
+        // scores is unable to discriminate between class0 and class1 (it is poor model). Demonstrate near-zero
+        // H-Measure in this case
+        let mut c0_a: f64 = 4.0;
+        let mut c1_a: f64 = 4.0;
+        let mut c0_b: f64 = 4.0;
+        let mut c1_b: f64 = 4.0;
+        let c0_n: usize = 2000;
+        let c1_n: usize = 2000;
+        // seed the random number generator for reproducibility.
+        let mut rng = BinaryClassifierScores::generate_rng(13);
+        // generate dummy score data for the pair of binary classes: class0 and class1
+        let class0_params = BetaParams { alpha: c0_a, beta: c0_b };
+        let class1_params = BetaParams { alpha: c1_a, beta: c1_b };
+        let bcp = &BinaryClassParams { class0: class0_params, class1: class1_params };
+        let mut bcs = BinaryClassifierScores::new(&bcp, c0_n, c1_n, &mut rng);
 
-    // specify a cost ratio density
-    let cost_density_params = BetaParams { alpha: 2.0, beta: 2.0 };
-    let crd = CostRatioDensity::new(cost_density_params);
+        // specify a cost ratio density
+        let cost_density_params = BetaParams { alpha: 2.0, beta: 2.0 };
+        let crd = CostRatioDensity::new(cost_density_params);
 
-    // calculate the H-Measure given the cost ratio density and scores
-    let mut hm = HMeasure::new(crd, None, None);
-    let scores = &mut bcs.scores;
-    let hmr = hm.h_measure(scores);
-    // Note : the H-Measure will not in general be identically zero in this test, despite the
-    // distributions of the class0 and class1 scores being identical. This is a natural property of
-    // and random sample-based measure (the sampled values from the two distributions will in general be
-    // different - although for large sample size, the effect should be small).
-    assert!(hmr.h < 0.001);
+        // calculate the H-Measure given the cost ratio density and scores
+        let mut hm = HMeasure::new(crd, None, None);
+        let scores = &mut bcs.scores;
+        let hmr = hm.h_measure(scores);
+        // Note : the H-Measure will not in general be identically zero in this test, despite the
+        // distributions of the class0 and class1 scores being identical. This is a natural property of
+        // and random sample-based measure (the sampled values from the two distributions will in general be
+        // different - although for large sample size, the effect should be small).
+        assert!(hmr.h < 0.001);
+    }
 }
