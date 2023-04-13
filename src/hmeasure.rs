@@ -1,3 +1,12 @@
+/*!
+The hmeasure module provides an implementation of:
+CostRatioDensity: a struct to enable generating cost distributions using the Beta distribution.
+HMeasure: a struct to enable generating the H-Measure metric, given a cost distribution and binary classification scores
+for a pair of classes (class0 and class1). Priors for the class scores may be optionally specified, or inferred from
+the data provided.
+The scores are generated exogenously by a model (the hmeasure module is agnostic to the source of the scores).
+HMeasureResults: a struct to receive the results of the HMeasure calculation and enable saving to file.
+*/
 use std::io::Write;
 use std::fs::{OpenOptions, File};
 
@@ -6,9 +15,11 @@ use array2d::Array2D;
 use quadrature::double_exponential;
 
 use crate::datagen;
-use datagen::{BetaParams, BinaryClassScores};
+use datagen::{BetaParams, BinaryClassScores, BinaryClassifierScores, BinaryClassParams};
 
-
+/**
+CostRatioDensity: a struct to enable generating cost distributions using the Beta distribution
+*/
 #[derive(Debug)]
 pub struct CostRatioDensity{
     pub c_density_obj: Beta
@@ -20,19 +31,36 @@ impl CostRatioDensity {
             c_density_obj: Beta::new(bparms.alpha, bparms.beta).unwrap()
         }
     }
+    /**
+    A convenience helper function for a component of the H-Measure numerical integration.
+    */
     pub fn uc(&self, cost: f64) -> f64 {
         cost*self.c_density_obj.pdf(cost)
     }
+    /**
+    A convenience helper function for a component of the H-Measure numerical integration.
+    */
     pub fn u1mc(&self, cost: f64) -> f64 {
         (1.0-cost)*self.c_density_obj.pdf(cost)
     }
+    /**
+    The cumulative probability density function of the CostRatio distribution.
+    */
     pub fn cdf(&self, cost: f64) -> f64 {self.c_density_obj.cdf(cost) }
+    /**
+    The probability density function of the CostRatio distribution.
+    */
     pub fn pdf(&self, cost: f64) -> f64 {
         self.c_density_obj.pdf(cost)
     }
 }
 
-
+/**
+HMeasure: a struct to enable generating the H-Measure metric, given a cost distribution and binary classification scores
+for a pair of classes (class0 and class1). Priors for the class scores may be optionally specified, or inferred from
+the data provided.
+The scores are generated exogenously by a model (the hmeasure module is agnostic to the source of the scores).
+*/
 #[derive(Debug)]
 pub struct HMeasure{
     cost_distribution: CostRatioDensity,
@@ -43,6 +71,9 @@ pub struct HMeasure{
     pub h: Option<f64>
 }
 
+/**
+HMeasureResults: a struct to receive the results of the HMeasure calculation and enable saving to file
+*/
 #[derive(Debug)]
 pub struct HMeasureResults{
     pub h: f64,
@@ -53,6 +84,9 @@ pub struct HMeasureResults{
     pub class1_score: Vec<f64>
 }
 
+/**
+A trait for saving model results to file given a file handle.
+*/
 pub trait SaveData<File> {
     fn save(&self, f: &mut File);
 }
@@ -117,7 +151,9 @@ impl<File: Write> SaveData<File> for Vec<Vec<f64>>{
     }
 }
 
-
+/**
+A generic for saving model results to file for types that have implemented the SaveData trait.
+*/
 pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str){
     let f = &mut OpenOptions::new()
         .append(true)
@@ -130,6 +166,9 @@ pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str){
     vec.save(f)
 }
 
+/**
+Implementation of the save function for persisting H-Measure model results to file.
+*/
 impl HMeasureResults{
     pub fn save(&self, result_set: &str, filepath: &str){
         let chull_name = self.result_set_path("ch", filepath, result_set);
@@ -153,6 +192,9 @@ impl HMeasureResults{
     }
 }
 
+/**
+Implementation of the HMeasure functions for calculating the H-Measure metric.
+*/
 impl HMeasure{
     pub fn new(cost_distribution: CostRatioDensity, class0_prior: Option<f64>, class1_prior: Option<f64>) -> HMeasure {
         HMeasure {
@@ -361,3 +403,36 @@ impl HMeasure{
     }
 }
 
+#[test]
+fn assert_low_hmeasure(){
+    // Choose class0 and class1 to have identical score distributions => the classifier model that generated the
+    // scores is unable to discriminate between class0 and class1 (it is poor model). Demonstrate near-zero
+    // H-Measure in this case
+    let mut c0_a: f64 = 4.0;
+    let mut c1_a: f64 = 4.0;
+    let mut c0_b: f64 = 4.0;
+    let mut c1_b: f64 = 4.0;
+    let c0_n: usize = 2000;
+    let c1_n: usize = 2000;
+    // seed the random number generator for reproducibility.
+    let mut rng = BinaryClassifierScores::generate_rng(13);
+    // generate dummy score data for the pair of binary classes: class0 and class1
+    let class0_params = BetaParams { alpha: c0_a, beta: c0_b };
+    let class1_params = BetaParams { alpha: c1_a, beta: c1_b };
+    let bcp = &BinaryClassParams { class0: class0_params, class1: class1_params };
+    let mut bcs = BinaryClassifierScores::new(&bcp, c0_n, c1_n, &mut rng);
+
+    // specify a cost ratio density
+    let cost_density_params = BetaParams { alpha: 2.0, beta: 2.0 };
+    let crd = CostRatioDensity::new(cost_density_params);
+
+    // calculate the H-Measure given the cost ratio density and scores
+    let mut hm = HMeasure::new(crd, None, None);
+    let scores = &mut bcs.scores;
+    let hmr = hm.h_measure(scores);
+    // Note : the H-Measure will not in general be identically zero in this test, despite the
+    // distributions of the class0 and class1 scores being identical. This is a natural property of
+    // and random sample-based measure (the sampled values from the two distributions will in general be
+    // different - although for large sample size, the effect should be small).
+    assert!(hmr.h < 0.001);
+}
