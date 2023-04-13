@@ -20,5 +20,5 @@ A discussion with further examples and python implementation is provided in Chap
 */
 mod hm;
 mod datagen;
-pub use hm::{CostRatioDensity, HMeasure};
-pub use datagen::{BetaParams, BinaryClassParams, BinaryClassifierScores};
+pub use hm::{CostRatioDensity, HMeasureResults, HMeasure};
+pub use datagen::{BetaParams, BinaryClassParams, BinaryClassScores, BinaryClassifierScores};
