@@ -3,8 +3,8 @@
 
 The hmeasure crate provides a Rust implementation of the H-measure. The **H-measure is a coherent alternative**
 to the widely used AUC measure (Area Under the ROC Curve) for assessing the relative quality
-of two binary classifiers. Whereas the AUC implicitly assumes a different cost distribution for the
-"cost of being wrong" depending the classifier it is applied to, the H-Measure, by contrast, enables
+of binary classifiers. Whereas the AUC implicitly assumes a different cost distribution for the
+"cost of being wrong" depending on the classifier it is applied to, the H-Measure, by contrast, enables
 the researcher to fix the cost distribution consistently across all classifiers studied. The "cost of
 being wrong" is an inherent property of the subject being modelled and should not depend on the
 specific model being used to model the subject. H-Measure enables that consistency, whereas AUC does not.
