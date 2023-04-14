@@ -412,10 +412,10 @@ mod tests {
         // Choose class0 and class1 to have identical score distributions => the classifier model that generated the
         // scores is unable to discriminate between class0 and class1 (it is poor model). Demonstrate near-zero
         // H-Measure in this case
-        let mut c0_a: f64 = 4.0;
-        let mut c1_a: f64 = 4.0;
-        let mut c0_b: f64 = 4.0;
-        let mut c1_b: f64 = 4.0;
+        let c0_a: f64 = 4.0;
+        let c1_a: f64 = 4.0;
+        let c0_b: f64 = 4.0;
+        let c1_b: f64 = 4.0;
         let c0_n: usize = 2000;
         let c1_n: usize = 2000;
         // seed the random number generator for reproducibility.

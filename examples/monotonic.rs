@@ -53,12 +53,3 @@ pub fn example_hmeasure(){
 fn main(){
     example_hmeasure()
 }
-
-// use std::env;
-//
-// fn main() {
-//     let current_dir = env::current_dir().unwrap();
-//     let root_dir = current_dir.parent().unwrap().parent().unwrap();
-//     println!("Current directory: {:?}", current_dir);
-//     println!("Root directory: {:?}", root_dir);
-// }
