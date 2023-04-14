@@ -280,8 +280,7 @@ impl HMeasure{
         roc_points.push(vec![roc_point[0], roc_point[1]]);
         let mut i = 0;
         while i < num_rows {
-            let i_score = c_scores[i];
-            let (duplicate_0, duplicate_1) = HMeasure::duplicate_classes(c_scores, c_classes, i_score);
+            let (duplicate_0, duplicate_1) = HMeasure::duplicate_classes(c_scores, c_classes, i);
             let duplicate_i = duplicate_0 + duplicate_1;
             roc_point[0] += duplicate_1 as f64 / self.c1_num.unwrap_or(1) as f64;
             roc_point[1] += duplicate_0 as f64 / self.c0_num.unwrap_or(1) as f64;
@@ -291,17 +290,22 @@ impl HMeasure{
         roc_points
     }
 
-    fn duplicate_classes(scores: &Vec<f64>, classes: &Vec<u8>, target: f64) -> (usize,usize) {
+    fn duplicate_classes(scores: &Vec<f64>, classes: &Vec<u8>, idx: usize) -> (usize,usize) {
         let mut dup_class_0 = vec![];
         let mut dup_class_1 = vec![];
-        for (i, i_score) in scores.iter().enumerate() {
-            if *i_score == target {
-                if classes[i] == 0 {
-                    dup_class_0.push(classes[i]);
+        let score_len = scores.len();
+        // scores and classes are sorted already here, so only iterate over the range from idx upwards
+        // and break once the scores are greater than scores[idx]
+        for j in idx..score_len{
+            if scores[j] == scores[idx] {
+                if classes[j] == 0 {
+                    dup_class_0.push(classes[j]);
                 }
                 else {
-                    dup_class_1.push(classes[i]);
+                    dup_class_1.push(classes[j]);
                 }
+            } else if scores[j] > scores[idx] {
+                break
             }
         }
 
