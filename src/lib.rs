@@ -15,7 +15,13 @@ The H-measure was introduced by David J. Hand in the paper:
 Mach Learn (2009) 77: 103–123
 <https://link.springer.com/article/10.1007/s10994-009-5119-5>
 
-A discussion with further examples and python implementation is provided in Chapter 2 of:
+A rust pyo3-based wrapper to expose the hmeasure crate in python is provided at:
+<https://github.com/robinwiseman/pyhmeasure>
+
+Benchmark comparisons of the Rust hmeasure implementation with
+an equivalent python implementation are also provided.
+
+A discussion with further examples is provided in Chapter 2 of:
 <https://github.com/robinwiseman/finML/blob/aa12845f01454c24f36f4df0d1cb6e0993ea7c7f/src/finML_2022.pdf>
 */
 mod hm;

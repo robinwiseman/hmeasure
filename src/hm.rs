@@ -440,7 +440,7 @@ mod tests {
         let hmr = hm.h_measure(scores);
         // Note : the H-Measure will not in general be identically zero in this test, despite the
         // distributions of the class0 and class1 scores being identical. This is a natural property of
-        // and random sample-based measure (the sampled values from the two distributions will in general be
+        // a random sample-based measure (the sampled values from the two distributions will in general be
         // different - although for large sample size, the effect should be small).
         assert!(hmr.h < 0.001);
     }

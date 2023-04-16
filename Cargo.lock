@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "hmeasure"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "array2d",
  "criterion",
