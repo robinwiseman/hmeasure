@@ -24,7 +24,7 @@ an equivalent python implementation are also provided.
 A discussion with further examples is provided in Chapter 2 of:
 <https://github.com/robinwiseman/finML/blob/aa12845f01454c24f36f4df0d1cb6e0993ea7c7f/src/finML_2022.pdf>
 */
-mod hm;
 mod datagen;
-pub use hm::{CostRatioDensity, HMeasureResults, HMeasure};
+mod hm;
 pub use datagen::{BetaParams, BinaryClassParams, BinaryClassScores, BinaryClassifierScores};
+pub use hm::{CostRatioDensity, HMeasure, HMeasureResults};
