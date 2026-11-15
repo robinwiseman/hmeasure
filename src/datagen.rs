@@ -6,20 +6,14 @@ underlying the data generation. The dummy data is generated using Beta distribut
 of classifier scores, where the parameters of the class distributions can be varied in order to example
 the performance of the H-Measure as the class0 and class1 score distributions are made more/less
 distinguishable.
+The module is only compiled when the datagen feature is enabled.
 */
-use rand::distributions::Distribution;
+use rand::distr::Distribution;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use statrs::distribution::Beta;
 
-/**
-A struct to hold the Beta distribution parameters.
- */
-#[derive(Debug)]
-pub struct BetaParams {
-    pub alpha: f64,
-    pub beta: f64,
-}
+use crate::hm::{BetaParams, BinaryClassScores, HMeasureError};
 
 /**
 A struct to hold the Beta distribution parameters for each class.
@@ -28,15 +22,6 @@ A struct to hold the Beta distribution parameters for each class.
 pub struct BinaryClassParams {
     pub class0: BetaParams,
     pub class1: BetaParams,
-}
-
-/**
-A struct to hold the scores for each binary class.
-*/
-#[derive(Debug)]
-pub struct BinaryClassScores {
-    pub class0: Vec<f64>,
-    pub class1: Vec<f64>,
 }
 
 /**
@@ -51,12 +36,16 @@ pub struct BinaryClassifierScores<'a> {
 }
 
 impl BinaryClassifierScores<'_> {
+    /**
+    Returns HMeasureError::InvalidBetaParams unless the Beta parameters of both classes are finite and
+    greater than zero.
+    */
     pub fn new<'a>(
         class_params: &'a BinaryClassParams,
         c0_sample_size: usize,
         c1_sample_size: usize,
         rng: &'a mut ChaCha8Rng,
-    ) -> BinaryClassifierScores<'a> {
+    ) -> Result<BinaryClassifierScores<'a>, HMeasureError> {
         let c0s: Vec<f64> = vec![0.0; c0_sample_size];
         let c1s: Vec<f64> = vec![0.0; c1_sample_size];
         let bin_class_scores = BinaryClassScores {
@@ -69,30 +58,30 @@ impl BinaryClassifierScores<'_> {
             c1_sample_size,
             scores: bin_class_scores,
         };
-        bcs.generate_samples(rng);
-        bcs
+        bcs.generate_samples(rng)?;
+        Ok(bcs)
     }
-    pub fn generate_samples(&mut self, mut rng: &mut ChaCha8Rng) {
-        let beta_0 = Beta::new(
-            self.class_params.class0.alpha,
-            self.class_params.class0.beta,
-        )
-        .unwrap();
+    pub fn generate_samples(&mut self, mut rng: &mut ChaCha8Rng) -> Result<(), HMeasureError> {
+        let beta_0 = beta_distribution(&self.class_params.class0)?;
         for i in 0..self.c0_sample_size {
             let v_0 = beta_0.sample(&mut rng);
             self.scores.class0[i] = v_0;
         }
-        let beta_1 = Beta::new(
-            self.class_params.class1.alpha,
-            self.class_params.class1.beta,
-        )
-        .unwrap();
+        let beta_1 = beta_distribution(&self.class_params.class1)?;
         for i in 0..self.c1_sample_size {
             let v_1 = beta_1.sample(&mut rng);
             self.scores.class1[i] = v_1;
         }
+        Ok(())
     }
     pub fn generate_rng(seed: u64) -> ChaCha8Rng {
         ChaCha8Rng::seed_from_u64(seed)
     }
+}
+
+fn beta_distribution(params: &BetaParams) -> Result<Beta, HMeasureError> {
+    Beta::new(params.alpha, params.beta).map_err(|_| HMeasureError::InvalidBetaParams {
+        alpha: params.alpha,
+        beta: params.beta,
+    })
 }

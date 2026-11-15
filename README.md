@@ -19,6 +19,16 @@ integrals are evaluated in closed form. Any other cost distribution can be suppl
 the CostDistribution trait, or simply as a closure giving its density, in which case the integrals
 are evaluated by numerical quadrature.
 
+Invalid inputs (Beta parameters, class priors, empty classes or NaN scores) are reported as an HMeasureError
+rather than a panic.
+
+The generators of reproducible dummy classifier scores used by the tests, example and benchmarks
+(BinaryClassParams and BinaryClassifierScores) are behind the `datagen` feature, which is off by default:
+
+```toml
+hmeasure = { version = "0.1", features = ["datagen"] }
+```
+
 A rust pyo3-based wrapper to expose the hmeasure crate in python is provided at:
 <https://github.com/robinwiseman/pyhmeasure>
 

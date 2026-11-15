@@ -14,6 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # The library on its own, without the datagen feature that the tests enable.
+      - run: cargo check --locked
       - run: cargo test --locked
 
   lint:

@@ -8,29 +8,113 @@ for a pair of classes (class0 and class1). Priors for the class scores may be op
 the data provided.
 The scores are generated exogenously by a model (the hmeasure module is agnostic to the source of the scores).
 HMeasureResults: a struct to receive the results of the HMeasure calculation and enable saving to file.
+HMeasureError: the errors returned for invalid inputs.
 */
+use std::error::Error;
+use std::fmt;
 use std::fs::File;
-use std::io::Write;
+use std::io::{self, Write};
 
 use quadrature::double_exponential;
 use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 
-use crate::datagen;
-use datagen::{BetaParams, BinaryClassScores};
+/**
+A struct to hold the Beta distribution parameters.
+ */
+#[derive(Debug)]
+pub struct BetaParams {
+    pub alpha: f64,
+    pub beta: f64,
+}
+
+/**
+A struct to hold the scores for each binary class.
+*/
+#[derive(Debug)]
+pub struct BinaryClassScores {
+    pub class0: Vec<f64>,
+    pub class1: Vec<f64>,
+}
+
+/**
+HMeasureError: the errors returned when the inputs to the H-Measure calculation are invalid.
+*/
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum HMeasureError {
+    /**
+    The Beta distribution parameters are not both finite and greater than zero.
+    */
+    InvalidBetaParams { alpha: f64, beta: f64 },
+    /**
+    The class priors are not both greater than zero and summing to one.
+    */
+    InvalidPriors { class0: f64, class1: f64 },
+    /**
+    The given class (0 or 1) has no scores.
+    */
+    EmptyClass { class: u8 },
+    /**
+    The given class (0 or 1) contains a NaN score.
+    */
+    NanScore { class: u8 },
+}
+
+impl fmt::Display for HMeasureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HMeasureError::InvalidBetaParams { alpha, beta } => write!(
+                f,
+                "Beta parameters must be finite and greater than zero, got alpha = {alpha}, beta = {beta}"
+            ),
+            HMeasureError::InvalidPriors { class0, class1 } => write!(
+                f,
+                "class priors must each be greater than zero and sum to one, got class0 = {class0}, class1 = {class1}"
+            ),
+            HMeasureError::EmptyClass { class } => write!(f, "class{class} has no scores"),
+            HMeasureError::NanScore { class } => write!(f, "class{class} contains a NaN score"),
+        }
+    }
+}
+
+impl Error for HMeasureError {}
 
 /**
 CostRatioDensity: a struct to enable generating cost distributions using the Beta distribution
 */
 #[derive(Debug)]
 pub struct CostRatioDensity {
-    pub c_density_obj: Beta,
+    c_density_obj: Beta,
+    // c*pdf(c) and (1-c)*pdf(c) are proportional to the Beta(alpha+1, beta) and Beta(alpha, beta+1)
+    // densities, whose CDFs give the H-Measure integrals in closed form.
+    uc_cdf: Beta,
+    u1mc_cdf: Beta,
 }
 
 impl CostRatioDensity {
-    pub fn new(bparms: BetaParams) -> CostRatioDensity {
-        CostRatioDensity {
-            c_density_obj: Beta::new(bparms.alpha, bparms.beta).unwrap(),
-        }
+    /**
+    Returns HMeasureError::InvalidBetaParams unless alpha and beta are both finite and greater than zero.
+    */
+    pub fn new(bparms: BetaParams) -> Result<CostRatioDensity, HMeasureError> {
+        let BetaParams { alpha, beta } = bparms;
+        let invalid = |_| HMeasureError::InvalidBetaParams { alpha, beta };
+        Ok(CostRatioDensity {
+            c_density_obj: Beta::new(alpha, beta).map_err(invalid)?,
+            uc_cdf: Beta::new(alpha + 1.0, beta).map_err(invalid)?,
+            u1mc_cdf: Beta::new(alpha, beta + 1.0).map_err(invalid)?,
+        })
+    }
+    /**
+    The alpha parameter of the Beta distribution.
+    */
+    pub fn alpha(&self) -> f64 {
+        self.c_density_obj.shape_a()
+    }
+    /**
+    The beta parameter of the Beta distribution.
+    */
+    pub fn beta(&self) -> f64 {
+        self.c_density_obj.shape_b()
     }
     /**
     A convenience helper function for a component of the H-Measure numerical integration.
@@ -75,14 +159,15 @@ Any `Fn(f64) -> f64` closure is a CostDistribution, with the closure as its dens
 ```
 use hmeasure::{BinaryClassScores, HMeasure};
 
-let mut scores = BinaryClassScores {
+let scores = BinaryClassScores {
     class0: vec![0.1, 0.3],
     class1: vec![0.2, 0.4],
 };
 // a bell-shaped cost density centred on a cost ratio of 0.3
 let cost_density = |c: f64| (-(c - 0.3).powi(2) / 0.045).exp() / 0.375;
-let results = HMeasure::new(cost_density, None, None).h_measure(&mut scores);
+let results = HMeasure::new(cost_density, None, None)?.h_measure(&scores)?;
 assert!((results.h - 0.5).abs() < 1e-6);
+# Ok::<(), hmeasure::HMeasureError>(())
 ```
 */
 pub trait CostDistribution {
@@ -124,22 +209,14 @@ impl CostDistribution for CostRatioDensity {
     }
 
     fn uc_integral(&self, lo: f64, hi: f64) -> f64 {
-        let (a, b) = (self.c_density_obj.shape_a(), self.c_density_obj.shape_b());
-        a / (a + b) * cdf_between(&Beta::new(a + 1.0, b).unwrap(), lo, hi)
+        let (a, b) = (self.alpha(), self.beta());
+        a / (a + b) * (self.uc_cdf.cdf(hi) - self.uc_cdf.cdf(lo))
     }
 
     fn u1mc_integral(&self, lo: f64, hi: f64) -> f64 {
-        let (a, b) = (self.c_density_obj.shape_a(), self.c_density_obj.shape_b());
-        b / (a + b) * cdf_between(&Beta::new(a, b + 1.0).unwrap(), lo, hi)
+        let (a, b) = (self.alpha(), self.beta());
+        b / (a + b) * (self.u1mc_cdf.cdf(hi) - self.u1mc_cdf.cdf(lo))
     }
-}
-
-// An empty class gives NaN limits, which the statrs Beta CDF panics on; propagate NaN instead.
-fn cdf_between(cdf: &Beta, lo: f64, hi: f64) -> f64 {
-    if lo.is_nan() || hi.is_nan() {
-        return f64::NAN;
-    }
-    cdf.cdf(hi) - cdf.cdf(lo)
 }
 
 /**
@@ -152,10 +229,7 @@ The cost distribution is a CostRatioDensity (Beta) by default, and may be any Co
 #[derive(Debug)]
 pub struct HMeasure<C = CostRatioDensity> {
     cost_distribution: C,
-    class0_prior: Option<f64>,
-    class1_prior: Option<f64>,
-    c0_num: Option<usize>,
-    c1_num: Option<usize>,
+    priors: Option<(f64, f64)>,
     pub h: Option<f64>,
 }
 
@@ -176,46 +250,25 @@ pub struct HMeasureResults {
 A trait for saving model results to file given a file handle.
 */
 pub trait SaveData<File> {
-    fn save(&self, f: &mut File);
+    fn save(&self, f: &mut File) -> io::Result<()>;
 }
 
 impl<File: Write> SaveData<File> for Vec<f64> {
-    fn save(&self, f: &mut File) {
-        let sep = ",";
+    fn save(&self, f: &mut File) -> io::Result<()> {
         for (idx, element) in self.iter().enumerate() {
-            f.write_all(idx.to_string().as_bytes())
-                .expect("the unexpected");
-            f.write_all(sep.as_bytes()).expect("the unexpected");
-            f.write_all(element.to_string().as_bytes())
-                .expect("the unexpected");
-            f.write_all(b"\n").expect("the unexpected");
+            writeln!(f, "{idx},{element}")?;
         }
+        Ok(())
     }
 }
 
 impl<File: Write> SaveData<File> for Vec<Vec<f64>> {
-    fn save(&self, f: &mut File) {
-        let num_rows = self.len();
-        let num_cols = self[0].len();
-        let mut i = 0;
-        let sep = ",";
-        while i < num_rows {
-            let mut j = 0;
-            f.write_all(i.to_string().as_bytes())
-                .expect("the unexpected");
-            f.write_all(sep.as_bytes()).expect("the unexpected");
-            while j < num_cols {
-                let element = self[i][j];
-                f.write_all(element.to_string().as_bytes())
-                    .expect("the unexpected");
-                if j < num_cols - 1 {
-                    f.write_all(sep.as_bytes()).expect("the unexpected");
-                }
-                j += 1;
-            }
-            f.write_all(b"\n").expect("the unexpected");
-            i += 1;
+    fn save(&self, f: &mut File) -> io::Result<()> {
+        for (idx, row) in self.iter().enumerate() {
+            let elements: Vec<String> = row.iter().map(|element| element.to_string()).collect();
+            writeln!(f, "{idx},{}", elements.join(","))?;
         }
+        Ok(())
     }
 }
 
@@ -223,11 +276,9 @@ impl<File: Write> SaveData<File> for Vec<Vec<f64>> {
 A generic for saving model results to file for types that have implemented the SaveData trait.
 An existing file at filepath is overwritten.
 */
-pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str) {
-    let f = &mut File::create(filepath).expect("the unexpected");
-
-    f.write_all(header.as_bytes()).expect("the unexpected");
-    f.write_all(b"\n").expect("the unexpected");
+pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str) -> io::Result<()> {
+    let f = &mut File::create(filepath)?;
+    writeln!(f, "{header}")?;
     vec.save(f)
 }
 
@@ -235,25 +286,29 @@ pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str) {
 Implementation of the save function for persisting H-Measure model results to file.
 */
 impl HMeasureResults {
-    pub fn save(&self, result_set: &str, filepath: &str) {
+    /**
+    Writes five csv files into the directory filepath, overwriting any that exist. Returns the
+    underlying io::Error if a file cannot be created or written.
+    */
+    pub fn save(&self, result_set: &str, filepath: &str) -> io::Result<()> {
         let chull_name = self.result_set_path("ch", filepath, result_set);
-        write_vec(&self.convex_hull, chull_name.as_str(), "idx,chull0,chull1");
+        write_vec(&self.convex_hull, chull_name.as_str(), "idx,chull0,chull1")?;
 
         let roc_name = self.result_set_path("rc", filepath, result_set);
-        write_vec(&self.roc_curve, roc_name.as_str(), "idx,roc0,roc1");
+        write_vec(&self.roc_curve, roc_name.as_str(), "idx,roc0,roc1")?;
 
         let intcomp_name = self.result_set_path("ic", filepath, result_set);
         write_vec(
             &self.int_components,
             intcomp_name.as_str(),
             "idx,ic0,ic1,ic2,ic3",
-        );
+        )?;
 
         let score0_name = self.result_set_path("s0", filepath, result_set);
-        write_vec(&self.class0_score, score0_name.as_str(), "idx,score");
+        write_vec(&self.class0_score, score0_name.as_str(), "idx,score")?;
 
         let score1_name = self.result_set_path("s1", filepath, result_set);
-        write_vec(&self.class1_score, score1_name.as_str(), "idx,score");
+        write_vec(&self.class1_score, score1_name.as_str(), "idx,score")
     }
     pub fn result_set_path(&self, set_name: &str, filepath: &str, resultset: &str) -> String {
         let name = format!("{}/{}_{}.csv", filepath, set_name, resultset);
@@ -261,59 +316,93 @@ impl HMeasureResults {
     }
 }
 
+const PRIOR_SUM_TOLERANCE: f64 = 1e-9;
+
 /**
 Implementation of the HMeasure functions for calculating the H-Measure metric.
 */
 impl<C: CostDistribution> HMeasure<C> {
+    /**
+    With neither prior given, the priors are inferred from the class sizes of each set of scores.
+    With one prior given, the other is its complement. With both given, they must sum to one.
+    Returns HMeasureError::InvalidPriors unless both priors are greater than zero and sum to one.
+    */
     pub fn new(
         cost_distribution: C,
         class0_prior: Option<f64>,
         class1_prior: Option<f64>,
-    ) -> HMeasure<C> {
-        HMeasure {
-            cost_distribution,
-            class0_prior,
-            class1_prior,
-            c0_num: None,
-            c1_num: None,
-            h: None,
+    ) -> Result<HMeasure<C>, HMeasureError> {
+        let priors = match (class0_prior, class1_prior) {
+            (None, None) => None,
+            (Some(class0), None) => Some((class0, 1.0 - class0)),
+            (None, Some(class1)) => Some((1.0 - class1, class1)),
+            (Some(class0), Some(class1)) => Some((class0, class1)),
+        };
+        if let Some((class0, class1)) = priors {
+            let valid = class0 > 0.0
+                && class1 > 0.0
+                && (class0 + class1 - 1.0).abs() <= PRIOR_SUM_TOLERANCE;
+            if !valid {
+                return Err(HMeasureError::InvalidPriors { class0, class1 });
+            }
         }
+        Ok(HMeasure {
+            cost_distribution,
+            priors,
+            h: None,
+        })
     }
 
-    pub fn h_measure(&mut self, scores: &mut BinaryClassScores) -> HMeasureResults {
-        self.c0_num = Some(scores.class0.len());
-        self.c1_num = Some(scores.class1.len());
-        let num_scores = self.c0_num.unwrap_or(0) + self.c1_num.unwrap_or(0);
-        if self.class0_prior.is_none() || self.class1_prior.is_none() {
-            self.class0_prior = Some(self.c0_num.unwrap_or(0) as f64 / num_scores as f64);
-            self.class1_prior = Some(self.c1_num.unwrap_or(0) as f64 / num_scores as f64);
+    /**
+    Calculates the H-Measure for the scores, which are left unchanged. Returns
+    HMeasureError::EmptyClass if either class has no scores and HMeasureError::NanScore if any
+    score is NaN.
+    */
+    pub fn h_measure(
+        &mut self,
+        scores: &BinaryClassScores,
+    ) -> Result<HMeasureResults, HMeasureError> {
+        for (class, class_scores) in [(0, &scores.class0), (1, &scores.class1)] {
+            if class_scores.is_empty() {
+                return Err(HMeasureError::EmptyClass { class });
+            }
+            if class_scores.iter().any(|score| score.is_nan()) {
+                return Err(HMeasureError::NanScore { class });
+            }
         }
-        scores.class0.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        scores.class1.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let (c_scores, c_classes) = self.merge_scores(&scores.class0, &scores.class1);
-        let roc_curve = self.build_roc(&c_scores, &c_classes);
-        let (convex_hull, int_components) = self.build_chull(&roc_curve);
-        self.h = self._build_h(&int_components);
+        let c0_num = scores.class0.len();
+        let c1_num = scores.class1.len();
+        let num_scores = (c0_num + c1_num) as f64;
+        let priors = self
+            .priors
+            .unwrap_or((c0_num as f64 / num_scores, c1_num as f64 / num_scores));
 
-        let h = self.h.unwrap();
-        let class0_score = scores.class0.clone();
-        let class1_score = scores.class1.clone();
-        HMeasureResults {
+        let mut class0_score = scores.class0.clone();
+        let mut class1_score = scores.class1.clone();
+        class0_score.sort_by(|a, b| a.total_cmp(b));
+        class1_score.sort_by(|a, b| a.total_cmp(b));
+        let (c_scores, c_classes) = Self::merge_scores(&class0_score, &class1_score);
+        let roc_curve = Self::build_roc(&c_scores, &c_classes, c0_num, c1_num);
+        let (convex_hull, int_components) = Self::build_chull(&roc_curve, priors);
+        let h = self._build_h(&int_components, priors);
+        self.h = Some(h);
+
+        Ok(HMeasureResults {
             h,
             convex_hull,
             roc_curve,
             int_components,
             class0_score,
             class1_score,
-        }
+        })
     }
 
-    fn merge_scores(&self, c0: &[f64], c1: &[f64]) -> (Vec<f64>, Vec<u8>) {
+    fn merge_scores(c0: &[f64], c1: &[f64]) -> (Vec<f64>, Vec<u8>) {
         let mut c0_i = 0;
         let mut c1_i = 0;
         let mut cm_i = 0;
-        let c0_num = self.c0_num.unwrap_or(0);
-        let c1_num = self.c1_num.unwrap_or(0);
+        let c0_num = c0.len();
+        let c1_num = c1.len();
         let vec_size = c0_num + c1_num;
         let mut c_scores = vec![0.0; vec_size];
         let mut c_classes = vec![0; vec_size];
@@ -347,7 +436,12 @@ impl<C: CostDistribution> HMeasure<C> {
         (c_scores, c_classes)
     }
 
-    fn build_roc(&self, c_scores: &[f64], c_classes: &[u8]) -> Vec<Vec<f64>> {
+    fn build_roc(
+        c_scores: &[f64],
+        c_classes: &[u8],
+        c0_num: usize,
+        c1_num: usize,
+    ) -> Vec<Vec<f64>> {
         let num_rows = c_scores.len();
         let mut roc_points: Vec<Vec<f64>> = vec![vec![0.0, 0.0]];
         // Cumulative counts keep each coordinate an exactly rounded fraction, so collinear ROC points
@@ -360,8 +454,8 @@ impl<C: CostDistribution> HMeasure<C> {
             count_0 += duplicate_0;
             count_1 += duplicate_1;
             roc_points.push(vec![
-                count_1 as f64 / self.c1_num.unwrap_or(1) as f64,
-                count_0 as f64 / self.c0_num.unwrap_or(1) as f64,
+                count_1 as f64 / c1_num as f64,
+                count_0 as f64 / c0_num as f64,
             ]);
             i += duplicate_0 + duplicate_1;
         }
@@ -389,7 +483,7 @@ impl<C: CostDistribution> HMeasure<C> {
         (dup_class_0.len(), dup_class_1.len())
     }
 
-    fn build_chull(&self, roc_c: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    fn build_chull(roc_c: &[Vec<f64>], priors: (f64, f64)) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
         // The ROC points are already ordered along the curve, so the upper convex hull follows from
         // a single monotone-chain pass: drop the last hull point while it lies on or below the line
         // from its predecessor to the incoming point.
@@ -413,7 +507,7 @@ impl<C: CostDistribution> HMeasure<C> {
         let mut int_components: Vec<Vec<f64>> = vec![];
         let mut cval_prior = 0.0;
         for edge in hull.windows(2) {
-            let mut cval = self._cval(&edge[0], &edge[1]);
+            let mut cval = Self::_cval(&edge[0], &edge[1], priors);
             // Rounding on almost collinear edges can leave a threshold an ulp below its predecessor.
             if cval < cval_prior {
                 cval = cval_prior;
@@ -427,55 +521,53 @@ impl<C: CostDistribution> HMeasure<C> {
         (chull, int_components)
     }
 
-    fn _cval(&self, current_point: &[f64; 2], i_point: &[f64; 2]) -> f64 {
-        let numerator = self.class1_prior.unwrap_or(0.5) * (i_point[0] - current_point[0]);
-        let denominator = self.class0_prior.unwrap_or(0.5) * (i_point[1] - current_point[1])
-            + self.class1_prior.unwrap_or(0.5) * (i_point[0] - current_point[0]);
+    fn _cval(current_point: &[f64; 2], i_point: &[f64; 2], priors: (f64, f64)) -> f64 {
+        let (c0_prior, c1_prior) = priors;
+        let numerator = c1_prior * (i_point[0] - current_point[0]);
+        let denominator =
+            c0_prior * (i_point[1] - current_point[1]) + c1_prior * (i_point[0] - current_point[0]);
         numerator / denominator
     }
 
-    fn _build_h(&self, int_components: &[Vec<f64>]) -> Option<f64> {
-        let l = self._build_l(int_components).unwrap();
-        let l_max = self._l_max().unwrap();
-        Some(1.0 - l / l_max)
+    fn _build_h(&self, int_components: &[Vec<f64>], priors: (f64, f64)) -> f64 {
+        let l = self._build_l(int_components, priors);
+        let l_max = self._l_max(priors);
+        1.0 - l / l_max
     }
 
-    fn _build_l(&self, int_components: &[Vec<f64>]) -> Option<f64> {
+    fn _build_l(&self, int_components: &[Vec<f64>], priors: (f64, f64)) -> f64 {
         let mut l = 0.0;
         let mut i = 0;
         while i < int_components.len() {
             let int_vals = &int_components[i];
-            l += self._int_l_step(int_vals);
+            l += self._int_l_step(int_vals, priors);
             i += 1
         }
-        Some(l)
+        l
     }
 
-    fn _int_l_step(&self, int_vals: &[f64]) -> f64 {
+    fn _int_l_step(&self, int_vals: &[f64], priors: (f64, f64)) -> f64 {
         let r0i = int_vals[3];
         let r1i = int_vals[2];
         let ci = int_vals[1];
         let cip1 = int_vals[0];
-        let c0_prior = self.class0_prior.unwrap();
-        let c1_prior = self.class1_prior.unwrap();
+        let (c0_prior, c1_prior) = priors;
 
         c0_prior * (1.0 - r0i) * self.cost_distribution.uc_integral(ci, cip1)
             + c1_prior * r1i * self.cost_distribution.u1mc_integral(ci, cip1)
     }
 
-    fn _l_max(&self) -> Option<f64> {
-        let c0_prior = self.class0_prior.unwrap();
-        let c1_prior = self.class1_prior.unwrap();
-        let l_max = c0_prior * self.cost_distribution.uc_integral(0.0, c1_prior)
-            + c1_prior * self.cost_distribution.u1mc_integral(c1_prior, 1.0);
-        Some(l_max)
+    fn _l_max(&self, priors: (f64, f64)) -> f64 {
+        let (c0_prior, c1_prior) = priors;
+        c0_prior * self.cost_distribution.uc_integral(0.0, c1_prior)
+            + c1_prior * self.cost_distribution.u1mc_integral(c1_prior, 1.0)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "datagen"))]
 mod tests {
-    use super::datagen::{BetaParams, BinaryClassParams, BinaryClassifierScores};
-    use super::{CostRatioDensity, HMeasure};
+    use super::{BetaParams, CostRatioDensity, HMeasure};
+    use crate::datagen::{BinaryClassParams, BinaryClassifierScores};
     #[test]
     fn assert_low_hmeasure() {
         // Choose class0 and class1 to have identical score distributions => the classifier model that generated the
@@ -502,19 +594,18 @@ mod tests {
             class0: class0_params,
             class1: class1_params,
         };
-        let mut bcs = BinaryClassifierScores::new(bcp, c0_n, c1_n, &mut rng);
+        let bcs = BinaryClassifierScores::new(bcp, c0_n, c1_n, &mut rng).unwrap();
 
         // specify a cost ratio density
         let cost_density_params = BetaParams {
             alpha: 2.0,
             beta: 2.0,
         };
-        let crd = CostRatioDensity::new(cost_density_params);
+        let crd = CostRatioDensity::new(cost_density_params).unwrap();
 
         // calculate the H-Measure given the cost ratio density and scores
-        let mut hm = HMeasure::new(crd, None, None);
-        let scores = &mut bcs.scores;
-        let hmr = hm.h_measure(scores);
+        let mut hm = HMeasure::new(crd, None, None).unwrap();
+        let hmr = hm.h_measure(&bcs.scores).unwrap();
         // Note : the H-Measure will not in general be identically zero in this test, despite the
         // distributions of the class0 and class1 scores being identical. This is a natural property of
         // a random sample-based measure (the sampled values from the two distributions will in general be
