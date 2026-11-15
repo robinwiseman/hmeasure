@@ -60,28 +60,27 @@ impl BinaryClassifierScores<'_> {
             class1: c1s
         };
         let mut bcs = BinaryClassifierScores{
-            class_params: &class_params,
-            c0_sample_size: c0_sample_size,
-            c1_sample_size: c1_sample_size,
+            class_params,
+            c0_sample_size,
+            c1_sample_size,
             scores: bin_class_scores
         };
         bcs.generate_samples(rng);
         bcs
     }
     pub fn generate_samples(&mut self, mut rng: &mut ChaCha8Rng) {
+        let beta_0 = Beta::new(self.class_params.class0.alpha, self.class_params.class0.beta).unwrap();
         for i in 0..self.c0_sample_size {
-            let beta_0 = Beta::new(self.class_params.class0.alpha, self.class_params.class0.beta).unwrap();
             let v_0 = beta_0.sample(&mut rng);
             self.scores.class0[i] = v_0;
         };
+        let beta_1 = Beta::new(self.class_params.class1.alpha, self.class_params.class1.beta).unwrap();
         for i in 0..self.c1_sample_size {
-            let beta_1 = Beta::new(self.class_params.class1.alpha, self.class_params.class1.beta).unwrap();
             let v_1 = beta_1.sample(&mut rng);
             self.scores.class1[i] = v_1;
         }
     }
     pub fn generate_rng(seed: u64) -> ChaCha8Rng{
-        let rng = ChaCha8Rng::seed_from_u64(seed);
-        rng
+        ChaCha8Rng::seed_from_u64(seed)
     }
 }

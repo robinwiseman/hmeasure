@@ -26,7 +26,7 @@ pub fn example_hmeasure(save: bool){
         let class0_params = BetaParams { alpha: c0_a, beta: c0_b };
         let class1_params = BetaParams { alpha: c1_a, beta: c1_b };
         let bcp = &BinaryClassParams { class0: class0_params, class1: class1_params };
-        let mut bcs = BinaryClassifierScores::new(&bcp, c0_n, c1_n, &mut rng);
+        let mut bcs = BinaryClassifierScores::new(bcp, c0_n, c1_n, &mut rng);
 
         // specify a cost ratio density
         let cost_density_params = BetaParams { alpha: 2.0, beta: 2.0 };

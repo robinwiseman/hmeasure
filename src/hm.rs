@@ -8,10 +8,9 @@ The scores are generated exogenously by a model (the hmeasure module is agnostic
 HMeasureResults: a struct to receive the results of the HMeasure calculation and enable saving to file.
 */
 use std::io::Write;
-use std::fs::{OpenOptions, File};
+use std::fs::File;
 
 use statrs::distribution::{Beta, Continuous, ContinuousCDF};
-use array2d::Array2D;
 use quadrature::double_exponential;
 
 use crate::datagen;
@@ -103,30 +102,6 @@ impl<File: Write> SaveData<File> for Vec<f64>{
     }
 }
 
-impl<File: Write> SaveData<File> for Array2D<f64>{
-    fn save(&self, f: &mut File){
-        let num_rows = self.column_len();
-        let num_cols = self.row_len();
-        let mut i = 0;
-        let sep = ",";
-        while i < num_rows {
-            let mut j = 0;
-            f.write_all(i.to_string().as_bytes()).expect("the unexpected");
-            f.write_all(sep.as_bytes()).expect("the unexpected");
-            while j < num_cols {
-                let element = self[(i,j)];
-                f.write_all(element.to_string().as_bytes()).expect("the unexpected");
-                if j < num_cols-1 {
-                    f.write_all(sep.as_bytes()).expect("the unexpected");
-                }
-                j += 1;
-            }
-            f.write_all(b"\n").expect("the unexpected");
-            i += 1;
-        }
-    }
-}
-
 impl<File: Write> SaveData<File> for Vec<Vec<f64>>{
     fn save(&self, f: &mut File){
         let num_rows = self.len();
@@ -153,13 +128,10 @@ impl<File: Write> SaveData<File> for Vec<Vec<f64>>{
 
 /**
 A generic for saving model results to file for types that have implemented the SaveData trait.
+An existing file at filepath is overwritten.
 */
 pub fn write_vec<T: SaveData<File>>(vec: &T, filepath: &str, header: &str){
-    let f = &mut OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(filepath)
-        .expect("the unexpected");
+    let f = &mut File::create(filepath).expect("the unexpected");
 
     f.write_all(header.as_bytes()).expect("the unexpected");
     f.write_all(b"\n").expect("the unexpected");
@@ -198,9 +170,9 @@ Implementation of the HMeasure functions for calculating the H-Measure metric.
 impl HMeasure{
     pub fn new(cost_distribution: CostRatioDensity, class0_prior: Option<f64>, class1_prior: Option<f64>) -> HMeasure {
         HMeasure {
-            cost_distribution: cost_distribution,
-            class0_prior: class0_prior,
-            class1_prior: class1_prior,
+            cost_distribution,
+            class0_prior,
+            class1_prior,
             c0_num: None,
             c1_num: None,
             h: None
@@ -234,7 +206,7 @@ impl HMeasure{
         }
     }
 
-    fn merge_scores(&self, c0: &Vec<f64>, c1: &Vec<f64>) -> (Vec<f64>, Vec<u8>) {
+    fn merge_scores(&self, c0: &[f64], c1: &[f64]) -> (Vec<f64>, Vec<u8>) {
         let mut c0_i = 0;
         let mut c1_i = 0;
         let mut cm_i = 0;
@@ -273,7 +245,7 @@ impl HMeasure{
         (c_scores, c_classes)
     }
 
-    fn build_roc(&self, c_scores: &Vec<f64>, c_classes: &Vec<u8>) -> Vec<Vec<f64>> {
+    fn build_roc(&self, c_scores: &[f64], c_classes: &[u8]) -> Vec<Vec<f64>> {
         let num_rows = c_scores.len();
         let mut roc_points: Vec<Vec<f64>> = vec![];
         let mut roc_point = [0.0, 0.0];
@@ -290,7 +262,7 @@ impl HMeasure{
         roc_points
     }
 
-    fn duplicate_classes(scores: &Vec<f64>, classes: &Vec<u8>, idx: usize) -> (usize,usize) {
+    fn duplicate_classes(scores: &[f64], classes: &[u8], idx: usize) -> (usize,usize) {
         let mut dup_class_0 = vec![];
         let mut dup_class_1 = vec![];
         let score_len = scores.len();
@@ -312,7 +284,7 @@ impl HMeasure{
         (dup_class_0.len(), dup_class_1.len())
     }
 
-    fn build_chull(&self, roc_c: &Vec<Vec<f64>>) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    fn build_chull(&self, roc_c: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
         let num_rows = roc_c.len();
         let mut chull: Vec<Vec<f64>> = vec![];
         let mut int_components: Vec<Vec<f64>> = vec![];
@@ -320,7 +292,7 @@ impl HMeasure{
         let mut cval_prior = 0.0;
         let mut i = 0;
         while i < num_rows-1 {
-            let cvals = self._cvals(&roc_c, i);
+            let cvals = self._cvals(roc_c, i);
             let c_argmin = HMeasure::argmin(&cvals);
             let cval_loc = [roc_c[i+c_argmin+1][0],roc_c[i+c_argmin+1][1]];
             chull.push(vec![cval_loc[0],cval_loc[1]]);
@@ -335,7 +307,7 @@ impl HMeasure{
         (chull, int_components)
     }
 
-    fn _cvals(&self, roc_c: &Vec<Vec<f64>>, current_idx: usize) -> Vec<f64> {
+    fn _cvals(&self, roc_c: &[Vec<f64>], current_idx: usize) -> Vec<f64> {
         let mut cvals: Vec<f64> = vec![];
         let current_point: [f64;2] = [roc_c[current_idx][0],roc_c[current_idx][1]];
         let mut i_point_idx = current_idx + 1;
@@ -353,7 +325,7 @@ impl HMeasure{
         numerator/denominator
     }
 
-    fn argmin(v: &Vec<f64>) -> usize {
+    fn argmin(v: &[f64]) -> usize {
         let mut min_idx = 0;
         let mut min_val = v[0];
         for (i, &val) in v.iter().enumerate() {
@@ -365,14 +337,14 @@ impl HMeasure{
         min_idx
     }
 
-    fn _build_h(&self, int_components: &Vec<Vec<f64>>) -> Option<f64> {
-        let l = self._build_l(&int_components).unwrap();
+    fn _build_h(&self, int_components: &[Vec<f64>]) -> Option<f64> {
+        let l = self._build_l(int_components).unwrap();
         let l_max = self._l_max().unwrap();
         // println!("l : l_max ~ {:?} : {:?}", l, l_max);
         Some(1.0-l/l_max)
     }
 
-    fn _build_l(&self, int_components: &Vec<Vec<f64>>) -> Option<f64> {
+    fn _build_l(&self, int_components: &[Vec<f64>]) -> Option<f64> {
         let mut l = 0.0;
         let mut i = 0;
         while i < int_components.len() {
@@ -383,7 +355,7 @@ impl HMeasure{
         Some(l)
     }
 
-    fn _int_l_step(&self, int_vals: &Vec<f64>) -> f64 {
+    fn _int_l_step(&self, int_vals: &[f64]) -> f64 {
         let r0i = int_vals[3];
         let r1i = int_vals[2];
         let ci = int_vals[1];
@@ -393,9 +365,7 @@ impl HMeasure{
         let int_uc = double_exponential::integrate(|x| self.cost_distribution.uc(x), ci, cip1, 1e-9).integral;
         let int_u1mc = double_exponential::integrate(|x| self.cost_distribution.u1mc(x), ci, cip1, 1e-9).integral;
 
-        let l_step = c0_prior*(1.0-r0i)*int_uc + c1_prior*r1i*int_u1mc;
-
-        return l_step
+        c0_prior*(1.0-r0i)*int_uc + c1_prior*r1i*int_u1mc
     }
 
     fn _l_max(&self) -> Option<f64> {
@@ -428,7 +398,7 @@ mod tests {
         let class0_params = BetaParams { alpha: c0_a, beta: c0_b };
         let class1_params = BetaParams { alpha: c1_a, beta: c1_b };
         let bcp = &BinaryClassParams { class0: class0_params, class1: class1_params };
-        let mut bcs = BinaryClassifierScores::new(&bcp, c0_n, c1_n, &mut rng);
+        let mut bcs = BinaryClassifierScores::new(bcp, c0_n, c1_n, &mut rng);
 
         // specify a cost ratio density
         let cost_density_params = BetaParams { alpha: 2.0, beta: 2.0 };
