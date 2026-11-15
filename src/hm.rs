@@ -19,20 +19,29 @@ use quadrature::double_exponential;
 use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 
 /**
-A struct to hold the Beta distribution parameters.
+A struct to hold the Beta distribution parameters. Both must be finite and greater than zero.
  */
 #[derive(Debug)]
 pub struct BetaParams {
+    /** The alpha (first shape) parameter. */
     pub alpha: f64,
+    /** The beta (second shape) parameter. */
     pub beta: f64,
 }
 
 /**
 A struct to hold the scores for each binary class.
+
+Class 0 is the class the classifier is expected to score lower, and class 1 the class it is expected to
+score higher. If the classes are supplied the other way round, the classifier appears to rank them worse
+than chance and the H-Measure is at or near zero. Only the ordering of the scores matters, so they do
+not have to be probabilities. Neither class may be empty and no score may be NaN.
 */
 #[derive(Debug)]
 pub struct BinaryClassScores {
+    /** The scores of the observations whose true class is class 0, in any order. */
     pub class0: Vec<f64>,
+    /** The scores of the observations whose true class is class 1, in any order. */
     pub class1: Vec<f64>,
 }
 
@@ -45,19 +54,35 @@ pub enum HMeasureError {
     /**
     The Beta distribution parameters are not both finite and greater than zero.
     */
-    InvalidBetaParams { alpha: f64, beta: f64 },
+    InvalidBetaParams {
+        /** The alpha parameter that was supplied. */
+        alpha: f64,
+        /** The beta parameter that was supplied. */
+        beta: f64,
+    },
     /**
     The class priors are not both greater than zero and summing to one.
     */
-    InvalidPriors { class0: f64, class1: f64 },
+    InvalidPriors {
+        /** The class 0 prior that was supplied, or implied by the class 1 prior. */
+        class0: f64,
+        /** The class 1 prior that was supplied, or implied by the class 0 prior. */
+        class1: f64,
+    },
     /**
     The given class (0 or 1) has no scores.
     */
-    EmptyClass { class: u8 },
+    EmptyClass {
+        /** The class without scores: 0 or 1. */
+        class: u8,
+    },
     /**
     The given class (0 or 1) contains a NaN score.
     */
-    NanScore { class: u8 },
+    NanScore {
+        /** The class containing the NaN score: 0 or 1. */
+        class: u8,
+    },
 }
 
 impl fmt::Display for HMeasureError {
@@ -81,6 +106,9 @@ impl Error for HMeasureError {}
 
 /**
 CostRatioDensity: a struct to enable generating cost distributions using the Beta distribution
+
+Beta(2, 2) is the cost distribution proposed by Hand for standardised comparisons between classifiers.
+The H-Measure integrals over a Beta distribution are evaluated in closed form.
 */
 #[derive(Debug)]
 pub struct CostRatioDensity {
@@ -146,6 +174,11 @@ impl CostRatioDensity {
 CostDistribution: a trait for the distribution of the cost ratio c over [0, 1] that weights the
 misclassification losses in the H-Measure. The H-Measure is defined for any such distribution; the Beta
 distribution provided by CostRatioDensity is the standard choice for comparable results.
+
+The cost ratio c is the cost of misclassifying a class 0 observation, as a share of the combined cost of
+misclassifying a class 0 observation and a class 1 observation. A distribution concentrated near zero
+therefore treats errors on class 1 as the expensive ones, and one concentrated near one treats errors on
+class 0 as the expensive ones.
 
 Only `pdf` is required: the two integrals the H-Measure needs are then evaluated by numerical quadrature
 between successive cost thresholds, to an absolute tolerance of 1e-9. The density does not have to
@@ -225,24 +258,59 @@ for a pair of classes (class0 and class1). Priors for the class scores may be op
 the data provided.
 The scores are generated exogenously by a model (the hmeasure module is agnostic to the source of the scores).
 The cost distribution is a CostRatioDensity (Beta) by default, and may be any CostDistribution.
+
+The H-Measure runs from zero, for a classifier that separates the classes no better than chance, to one,
+for a classifier that separates them perfectly. An HMeasure can be reused for any number of sets of scores.
+
+```
+use hmeasure::{BetaParams, BinaryClassScores, CostRatioDensity, HMeasure};
+
+let scores = BinaryClassScores {
+    class0: vec![0.10, 0.25, 0.30, 0.45, 0.60],
+    class1: vec![0.35, 0.55, 0.70, 0.80, 0.90],
+};
+let cost_density = CostRatioDensity::new(BetaParams { alpha: 2.0, beta: 2.0 })?;
+let mut hm = HMeasure::new(cost_density, None, None)?;
+let results = hm.h_measure(&scores)?;
+assert!(results.h > 0.0 && results.h < 1.0);
+assert_eq!(hm.h, Some(results.h));
+# Ok::<(), hmeasure::HMeasureError>(())
+```
 */
 #[derive(Debug)]
 pub struct HMeasure<C = CostRatioDensity> {
     cost_distribution: C,
     priors: Option<(f64, f64)>,
+    /** The H-Measure from the most recent call to h_measure, or None before the first call. */
     pub h: Option<f64>,
 }
 
 /**
 HMeasureResults: a struct to receive the results of the HMeasure calculation and enable saving to file
+
+Points on the ROC curve and its convex hull are [x, y] pairs, where for a score threshold t, x is the
+fraction of class 1 scores at or below t and y is the fraction of class 0 scores at or below t.
 */
 #[derive(Debug)]
 pub struct HMeasureResults {
+    /** The H-Measure: zero for no separation of the classes, one for perfect separation. */
     pub h: f64,
+    /**
+    The vertices of the upper convex hull of the ROC curve, in order, ending at [1, 1]. The starting
+    vertex [0, 0] is left out.
+    */
     pub convex_hull: Vec<Vec<f64>>,
+    /** The ROC curve from [0, 0] to [1, 1], with one point for each distinct score. */
     pub roc_curve: Vec<Vec<f64>>,
+    /**
+    The components of the loss integral, with one row for each convex hull vertex including [0, 0].
+    A row is [upper cost ratio, lower cost ratio, x, y]: the vertex [x, y] is the best operating
+    point for every cost ratio between the lower and the upper value.
+    */
     pub int_components: Vec<Vec<f64>>,
+    /** The class 0 scores, sorted in ascending order. */
     pub class0_score: Vec<f64>,
+    /** The class 1 scores, sorted in ascending order. */
     pub class1_score: Vec<f64>,
 }
 
@@ -287,8 +355,10 @@ Implementation of the save function for persisting H-Measure model results to fi
 */
 impl HMeasureResults {
     /**
-    Writes five csv files into the directory filepath, overwriting any that exist. Returns the
-    underlying io::Error if a file cannot be created or written.
+    Writes five csv files into the existing directory filepath, overwriting any that exist: the
+    convex hull (ch), ROC curve (rc), integral components (ic) and the sorted scores of each class
+    (s0 and s1), each named by result_set_path. Returns the underlying io::Error if a file cannot be
+    created or written.
     */
     pub fn save(&self, result_set: &str, filepath: &str) -> io::Result<()> {
         let chull_name = self.result_set_path("ch", filepath, result_set);
@@ -310,6 +380,9 @@ impl HMeasureResults {
         let score1_name = self.result_set_path("s1", filepath, result_set);
         write_vec(&self.class1_score, score1_name.as_str(), "idx,score")
     }
+    /**
+    The path of the csv file for one part of the results: filepath/set_name_resultset.csv.
+    */
     pub fn result_set_path(&self, set_name: &str, filepath: &str, resultset: &str) -> String {
         let name = format!("{}/{}_{}.csv", filepath, set_name, resultset);
         name
@@ -354,9 +427,9 @@ impl<C: CostDistribution> HMeasure<C> {
     }
 
     /**
-    Calculates the H-Measure for the scores, which are left unchanged. Returns
-    HMeasureError::EmptyClass if either class has no scores and HMeasureError::NanScore if any
-    score is NaN.
+    Calculates the H-Measure for the scores, which are left unchanged. Class 0 must be the class
+    expected to receive the lower scores: see BinaryClassScores. Returns HMeasureError::EmptyClass if
+    either class has no scores and HMeasureError::NanScore if any score is NaN.
     */
     pub fn h_measure(
         &mut self,
@@ -384,7 +457,7 @@ impl<C: CostDistribution> HMeasure<C> {
         let (c_scores, c_classes) = Self::merge_scores(&class0_score, &class1_score);
         let roc_curve = Self::build_roc(&c_scores, &c_classes, c0_num, c1_num);
         let (convex_hull, int_components) = Self::build_chull(&roc_curve, priors);
-        let h = self._build_h(&int_components, priors);
+        let h = self.build_h(&int_components, priors);
         self.h = Some(h);
 
         Ok(HMeasureResults {
@@ -507,7 +580,7 @@ impl<C: CostDistribution> HMeasure<C> {
         let mut int_components: Vec<Vec<f64>> = vec![];
         let mut cval_prior = 0.0;
         for edge in hull.windows(2) {
-            let mut cval = Self::_cval(&edge[0], &edge[1], priors);
+            let mut cval = Self::cval(&edge[0], &edge[1], priors);
             // Rounding on almost collinear edges can leave a threshold an ulp below its predecessor.
             if cval < cval_prior {
                 cval = cval_prior;
@@ -521,7 +594,7 @@ impl<C: CostDistribution> HMeasure<C> {
         (chull, int_components)
     }
 
-    fn _cval(current_point: &[f64; 2], i_point: &[f64; 2], priors: (f64, f64)) -> f64 {
+    fn cval(current_point: &[f64; 2], i_point: &[f64; 2], priors: (f64, f64)) -> f64 {
         let (c0_prior, c1_prior) = priors;
         let numerator = c1_prior * (i_point[0] - current_point[0]);
         let denominator =
@@ -529,24 +602,24 @@ impl<C: CostDistribution> HMeasure<C> {
         numerator / denominator
     }
 
-    fn _build_h(&self, int_components: &[Vec<f64>], priors: (f64, f64)) -> f64 {
-        let l = self._build_l(int_components, priors);
-        let l_max = self._l_max(priors);
+    fn build_h(&self, int_components: &[Vec<f64>], priors: (f64, f64)) -> f64 {
+        let l = self.build_l(int_components, priors);
+        let l_max = self.l_max(priors);
         1.0 - l / l_max
     }
 
-    fn _build_l(&self, int_components: &[Vec<f64>], priors: (f64, f64)) -> f64 {
+    fn build_l(&self, int_components: &[Vec<f64>], priors: (f64, f64)) -> f64 {
         let mut l = 0.0;
         let mut i = 0;
         while i < int_components.len() {
             let int_vals = &int_components[i];
-            l += self._int_l_step(int_vals, priors);
+            l += self.int_l_step(int_vals, priors);
             i += 1
         }
         l
     }
 
-    fn _int_l_step(&self, int_vals: &[f64], priors: (f64, f64)) -> f64 {
+    fn int_l_step(&self, int_vals: &[f64], priors: (f64, f64)) -> f64 {
         let r0i = int_vals[3];
         let r1i = int_vals[2];
         let ci = int_vals[1];
@@ -557,7 +630,7 @@ impl<C: CostDistribution> HMeasure<C> {
             + c1_prior * r1i * self.cost_distribution.u1mc_integral(ci, cip1)
     }
 
-    fn _l_max(&self, priors: (f64, f64)) -> f64 {
+    fn l_max(&self, priors: (f64, f64)) -> f64 {
         let (c0_prior, c1_prior) = priors;
         c0_prior * self.cost_distribution.uc_integral(0.0, c1_prior)
             + c1_prior * self.cost_distribution.u1mc_integral(c1_prior, 1.0)

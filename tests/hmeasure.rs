@@ -521,3 +521,11 @@ fn errors_describe_the_problem() {
     let error = HMeasureError::EmptyClass { class: 1 };
     assert_eq!(error.to_string(), "class1 has no scores");
 }
+
+#[test]
+fn readme_examples_print_the_documented_values() {
+    let class0 = [0.10, 0.20, 0.30, 0.45, 0.50, 0.75];
+    let class1 = [0.40, 0.60, 0.70, 0.80, 0.90];
+    assert_close(h_measure(&class0, &class1, 2.0, 2.0).h, 0.5212, 5e-5);
+    assert_close(h_measure_with(&class0, &class1, bell_density), 0.5418, 5e-5);
+}

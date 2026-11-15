@@ -20,7 +20,9 @@ A struct to hold the Beta distribution parameters for each class.
 */
 #[derive(Debug)]
 pub struct BinaryClassParams {
+    /** The parameters of the Beta distribution of the class 0 scores. */
     pub class0: BetaParams,
+    /** The parameters of the Beta distribution of the class 1 scores. */
     pub class1: BetaParams,
 }
 
@@ -32,11 +34,13 @@ pub struct BinaryClassifierScores<'a> {
     class_params: &'a BinaryClassParams,
     c0_sample_size: usize,
     c1_sample_size: usize,
+    /** The generated scores of each class. */
     pub scores: BinaryClassScores,
 }
 
 impl BinaryClassifierScores<'_> {
     /**
+    Generates c0_sample_size class 0 scores and c1_sample_size class 1 scores, drawing from rng.
     Returns HMeasureError::InvalidBetaParams unless the Beta parameters of both classes are finite and
     greater than zero.
     */
@@ -61,6 +65,9 @@ impl BinaryClassifierScores<'_> {
         bcs.generate_samples(rng)?;
         Ok(bcs)
     }
+    /**
+    Replaces the scores with a fresh sample from the class distributions, drawing from rng.
+    */
     pub fn generate_samples(&mut self, mut rng: &mut ChaCha8Rng) -> Result<(), HMeasureError> {
         let beta_0 = beta_distribution(&self.class_params.class0)?;
         for i in 0..self.c0_sample_size {
@@ -74,6 +81,9 @@ impl BinaryClassifierScores<'_> {
         }
         Ok(())
     }
+    /**
+    A random number generator seeded with seed, so that the generated scores are reproducible.
+    */
     pub fn generate_rng(seed: u64) -> ChaCha8Rng {
         ChaCha8Rng::seed_from_u64(seed)
     }
