@@ -1,6 +1,8 @@
 /*!
 The hmeasure module provides an implementation of:
 CostRatioDensity: a struct to enable generating cost distributions using the Beta distribution.
+CostDistribution: a trait for supplying any other cost distribution, evaluated by numerical quadrature unless
+it provides its integrals in closed form.
 HMeasure: a struct to enable generating the H-Measure metric, given a cost distribution and binary classification scores
 for a pair of classes (class0 and class1). Priors for the class scores may be optionally specified, or inferred from
 the data provided.
@@ -57,14 +59,99 @@ impl CostRatioDensity {
 }
 
 /**
+CostDistribution: a trait for the distribution of the cost ratio c over [0, 1] that weights the
+misclassification losses in the H-Measure. The H-Measure is defined for any such distribution; the Beta
+distribution provided by CostRatioDensity is the standard choice for comparable results.
+
+Only `pdf` is required: the two integrals the H-Measure needs are then evaluated by numerical quadrature
+between successive cost thresholds, to an absolute tolerance of 1e-9. The density does not have to
+integrate to exactly one, because the H-Measure is a ratio of two integrals over it, but it should be of
+order one for that tolerance to be meaningful, and smooth between thresholds. A distribution whose
+integrals are known in closed form can override `uc_integral` and `u1mc_integral`, which is both faster
+and exact; CostRatioDensity does this for the Beta distribution.
+
+Any `Fn(f64) -> f64` closure is a CostDistribution, with the closure as its density:
+
+```
+use hmeasure::{BinaryClassScores, HMeasure};
+
+let mut scores = BinaryClassScores {
+    class0: vec![0.1, 0.3],
+    class1: vec![0.2, 0.4],
+};
+// a bell-shaped cost density centred on a cost ratio of 0.3
+let cost_density = |c: f64| (-(c - 0.3).powi(2) / 0.045).exp() / 0.375;
+let results = HMeasure::new(cost_density, None, None).h_measure(&mut scores);
+assert!((results.h - 0.5).abs() < 1e-6);
+```
+*/
+pub trait CostDistribution {
+    /**
+    The density of the cost ratio at cost.
+    */
+    fn pdf(&self, cost: f64) -> f64;
+    /**
+    The integral of c * pdf(c) over [lo, hi].
+    */
+    fn uc_integral(&self, lo: f64, hi: f64) -> f64 {
+        double_exponential::integrate(|c| c * self.pdf(c), lo, hi, QUADRATURE_TOLERANCE).integral
+    }
+    /**
+    The integral of (1 - c) * pdf(c) over [lo, hi].
+    */
+    fn u1mc_integral(&self, lo: f64, hi: f64) -> f64 {
+        double_exponential::integrate(|c| (1.0 - c) * self.pdf(c), lo, hi, QUADRATURE_TOLERANCE)
+            .integral
+    }
+}
+
+const QUADRATURE_TOLERANCE: f64 = 1e-9;
+
+impl<F: Fn(f64) -> f64> CostDistribution for F {
+    fn pdf(&self, cost: f64) -> f64 {
+        self(cost)
+    }
+}
+
+/**
+For the Beta(a, b) density the integrals are evaluated in closed form through the Beta CDF:
+the integral of c*pdf(c) over [lo, hi] is a/(a+b) * (F(hi) - F(lo)), with F the Beta(a+1, b) CDF, and
+the integral of (1-c)*pdf(c) over [lo, hi] is b/(a+b) * (G(hi) - G(lo)), with G the Beta(a, b+1) CDF.
+*/
+impl CostDistribution for CostRatioDensity {
+    fn pdf(&self, cost: f64) -> f64 {
+        self.c_density_obj.pdf(cost)
+    }
+
+    fn uc_integral(&self, lo: f64, hi: f64) -> f64 {
+        let (a, b) = (self.c_density_obj.shape_a(), self.c_density_obj.shape_b());
+        a / (a + b) * cdf_between(&Beta::new(a + 1.0, b).unwrap(), lo, hi)
+    }
+
+    fn u1mc_integral(&self, lo: f64, hi: f64) -> f64 {
+        let (a, b) = (self.c_density_obj.shape_a(), self.c_density_obj.shape_b());
+        b / (a + b) * cdf_between(&Beta::new(a, b + 1.0).unwrap(), lo, hi)
+    }
+}
+
+// An empty class gives NaN limits, which the statrs Beta CDF panics on; propagate NaN instead.
+fn cdf_between(cdf: &Beta, lo: f64, hi: f64) -> f64 {
+    if lo.is_nan() || hi.is_nan() {
+        return f64::NAN;
+    }
+    cdf.cdf(hi) - cdf.cdf(lo)
+}
+
+/**
 HMeasure: a struct to enable generating the H-Measure metric, given a cost distribution and binary classification scores
 for a pair of classes (class0 and class1). Priors for the class scores may be optionally specified, or inferred from
 the data provided.
 The scores are generated exogenously by a model (the hmeasure module is agnostic to the source of the scores).
+The cost distribution is a CostRatioDensity (Beta) by default, and may be any CostDistribution.
 */
 #[derive(Debug)]
-pub struct HMeasure {
-    cost_distribution: CostRatioDensity,
+pub struct HMeasure<C = CostRatioDensity> {
+    cost_distribution: C,
     class0_prior: Option<f64>,
     class1_prior: Option<f64>,
     c0_num: Option<usize>,
@@ -177,12 +264,12 @@ impl HMeasureResults {
 /**
 Implementation of the HMeasure functions for calculating the H-Measure metric.
 */
-impl HMeasure {
+impl<C: CostDistribution> HMeasure<C> {
     pub fn new(
-        cost_distribution: CostRatioDensity,
+        cost_distribution: C,
         class0_prior: Option<f64>,
         class1_prior: Option<f64>,
-    ) -> HMeasure {
+    ) -> HMeasure<C> {
         HMeasure {
             cost_distribution,
             class0_prior,
@@ -262,17 +349,21 @@ impl HMeasure {
 
     fn build_roc(&self, c_scores: &[f64], c_classes: &[u8]) -> Vec<Vec<f64>> {
         let num_rows = c_scores.len();
-        let mut roc_points: Vec<Vec<f64>> = vec![];
-        let mut roc_point = [0.0, 0.0];
-        roc_points.push(vec![roc_point[0], roc_point[1]]);
+        let mut roc_points: Vec<Vec<f64>> = vec![vec![0.0, 0.0]];
+        // Cumulative counts keep each coordinate an exactly rounded fraction, so collinear ROC points
+        // stay collinear and the curve ends at exactly (1, 1).
+        let mut count_0 = 0;
+        let mut count_1 = 0;
         let mut i = 0;
         while i < num_rows {
-            let (duplicate_0, duplicate_1) = HMeasure::duplicate_classes(c_scores, c_classes, i);
-            let duplicate_i = duplicate_0 + duplicate_1;
-            roc_point[0] += duplicate_1 as f64 / self.c1_num.unwrap_or(1) as f64;
-            roc_point[1] += duplicate_0 as f64 / self.c0_num.unwrap_or(1) as f64;
-            roc_points.push(vec![roc_point[0], roc_point[1]]);
-            i += duplicate_i;
+            let (duplicate_0, duplicate_1) = Self::duplicate_classes(c_scores, c_classes, i);
+            count_0 += duplicate_0;
+            count_1 += duplicate_1;
+            roc_points.push(vec![
+                count_1 as f64 / self.c1_num.unwrap_or(1) as f64,
+                count_0 as f64 / self.c0_num.unwrap_or(1) as f64,
+            ]);
+            i += duplicate_0 + duplicate_1;
         }
         roc_points
     }
@@ -299,43 +390,41 @@ impl HMeasure {
     }
 
     fn build_chull(&self, roc_c: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
-        let num_rows = roc_c.len();
-        let mut chull: Vec<Vec<f64>> = vec![];
-        let mut int_components: Vec<Vec<f64>> = vec![];
-        let mut cval_loc_prior = [0.0, 0.0];
-        let mut cval_prior = 0.0;
-        let mut i = 0;
-        while i < num_rows - 1 {
-            let cvals = self._cvals(roc_c, i);
-            let c_argmin = HMeasure::argmin(&cvals);
-            let cval_loc = [roc_c[i + c_argmin + 1][0], roc_c[i + c_argmin + 1][1]];
-            chull.push(vec![cval_loc[0], cval_loc[1]]);
-            int_components.push(vec![
-                cvals[c_argmin],
-                cval_prior,
-                cval_loc_prior[0],
-                cval_loc_prior[1],
-            ]);
-            cval_loc_prior = cval_loc;
-            cval_prior = cvals[c_argmin];
-            i += c_argmin + 1;
+        // The ROC points are already ordered along the curve, so the upper convex hull follows from
+        // a single monotone-chain pass: drop the last hull point while it lies on or below the line
+        // from its predecessor to the incoming point.
+        let mut hull: Vec<[f64; 2]> = vec![];
+        for point in roc_c {
+            let p = [point[0], point[1]];
+            while hull.len() >= 2 {
+                let o = hull[hull.len() - 2];
+                let q = hull[hull.len() - 1];
+                let cross = (q[0] - o[0]) * (p[1] - o[1]) - (q[1] - o[1]) * (p[0] - o[0]);
+                if cross >= 0.0 {
+                    hull.pop();
+                } else {
+                    break;
+                }
+            }
+            hull.push(p);
         }
 
-        int_components.push(vec![1.0, cval_prior, cval_loc_prior[0], cval_loc_prior[1]]);
+        let chull: Vec<Vec<f64>> = hull[1..].iter().map(|p| p.to_vec()).collect();
+        let mut int_components: Vec<Vec<f64>> = vec![];
+        let mut cval_prior = 0.0;
+        for edge in hull.windows(2) {
+            let mut cval = self._cval(&edge[0], &edge[1]);
+            // Rounding on almost collinear edges can leave a threshold an ulp below its predecessor.
+            if cval < cval_prior {
+                cval = cval_prior;
+            }
+            int_components.push(vec![cval, cval_prior, edge[0][0], edge[0][1]]);
+            cval_prior = cval;
+        }
+        let last = hull[hull.len() - 1];
+        int_components.push(vec![1.0, cval_prior, last[0], last[1]]);
 
         (chull, int_components)
-    }
-
-    fn _cvals(&self, roc_c: &[Vec<f64>], current_idx: usize) -> Vec<f64> {
-        let mut cvals: Vec<f64> = vec![];
-        let current_point: [f64; 2] = [roc_c[current_idx][0], roc_c[current_idx][1]];
-        let mut i_point_idx = current_idx + 1;
-        while i_point_idx < roc_c.len() {
-            let i_point: [f64; 2] = [roc_c[i_point_idx][0], roc_c[i_point_idx][1]];
-            cvals.push(self._cval(&current_point, &i_point));
-            i_point_idx += 1;
-        }
-        cvals
     }
 
     fn _cval(&self, current_point: &[f64; 2], i_point: &[f64; 2]) -> f64 {
@@ -345,22 +434,9 @@ impl HMeasure {
         numerator / denominator
     }
 
-    fn argmin(v: &[f64]) -> usize {
-        let mut min_idx = 0;
-        let mut min_val = v[0];
-        for (i, &val) in v.iter().enumerate() {
-            if val < min_val {
-                min_idx = i;
-                min_val = val;
-            }
-        }
-        min_idx
-    }
-
     fn _build_h(&self, int_components: &[Vec<f64>]) -> Option<f64> {
         let l = self._build_l(int_components).unwrap();
         let l_max = self._l_max().unwrap();
-        // println!("l : l_max ~ {:?} : {:?}", l, l_max);
         Some(1.0 - l / l_max)
     }
 
@@ -382,27 +458,16 @@ impl HMeasure {
         let cip1 = int_vals[0];
         let c0_prior = self.class0_prior.unwrap();
         let c1_prior = self.class1_prior.unwrap();
-        let int_uc =
-            double_exponential::integrate(|x| self.cost_distribution.uc(x), ci, cip1, 1e-9)
-                .integral;
-        let int_u1mc =
-            double_exponential::integrate(|x| self.cost_distribution.u1mc(x), ci, cip1, 1e-9)
-                .integral;
 
-        c0_prior * (1.0 - r0i) * int_uc + c1_prior * r1i * int_u1mc
+        c0_prior * (1.0 - r0i) * self.cost_distribution.uc_integral(ci, cip1)
+            + c1_prior * r1i * self.cost_distribution.u1mc_integral(ci, cip1)
     }
 
     fn _l_max(&self) -> Option<f64> {
         let c0_prior = self.class0_prior.unwrap();
         let c1_prior = self.class1_prior.unwrap();
-        let mut l_max =
-            double_exponential::integrate(|x| self.cost_distribution.uc(x), 0.0, c1_prior, 1e-9)
-                .integral
-                * c0_prior;
-        l_max +=
-            double_exponential::integrate(|x| self.cost_distribution.u1mc(x), c1_prior, 1.0, 1e-9)
-                .integral
-                * c1_prior;
+        let l_max = c0_prior * self.cost_distribution.uc_integral(0.0, c1_prior)
+            + c1_prior * self.cost_distribution.u1mc_integral(c1_prior, 1.0);
         Some(l_max)
     }
 }

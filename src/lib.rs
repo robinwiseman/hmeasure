@@ -15,6 +15,11 @@ The H-measure was introduced by David J. Hand in the paper:
 Mach Learn (2009) 77: 103–123
 <https://link.springer.com/article/10.1007/s10994-009-5119-5>
 
+The cost distribution defaults to a Beta distribution (CostRatioDensity), for which the H-measure
+integrals are evaluated in closed form. Any other cost distribution can be supplied by implementing
+the CostDistribution trait, or simply as a closure giving its density, in which case the integrals
+are evaluated by numerical quadrature.
+
 A rust pyo3-based wrapper to expose the hmeasure crate in python is provided at:
 <https://github.com/robinwiseman/pyhmeasure>
 
@@ -27,4 +32,4 @@ A discussion with further examples is provided in Chapter 2 of:
 mod datagen;
 mod hm;
 pub use datagen::{BetaParams, BinaryClassParams, BinaryClassScores, BinaryClassifierScores};
-pub use hm::{CostRatioDensity, HMeasure, HMeasureResults};
+pub use hm::{CostDistribution, CostRatioDensity, HMeasure, HMeasureResults};

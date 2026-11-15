@@ -1,6 +1,6 @@
 use hmeasure::{
-    BetaParams, BinaryClassParams, BinaryClassScores, BinaryClassifierScores, CostRatioDensity,
-    HMeasure, HMeasureResults,
+    BetaParams, BinaryClassParams, BinaryClassScores, BinaryClassifierScores, CostDistribution,
+    CostRatioDensity, HMeasure, HMeasureResults,
 };
 
 fn h_measure(class0: &[f64], class1: &[f64], cost_alpha: f64, cost_beta: f64) -> HMeasureResults {
@@ -103,6 +103,75 @@ fn matches_independent_reference_values() {
         0.285532326169132,
         1e-9,
     );
+}
+
+#[test]
+fn matches_independent_reference_values_with_many_ties() {
+    // Rounding the fixture to one decimal place leaves only eleven distinct scores.
+    let (class0, class1) = fixture_scores();
+    let round = |v: &[f64]| -> Vec<f64> { v.iter().map(|s| (s * 10.0).round() / 10.0).collect() };
+    let (class0, class1) = (round(&class0), round(&class1));
+    assert_close(
+        h_measure(&class0, &class1, 2.0, 2.0).h,
+        0.294775660642526,
+        1e-9,
+    );
+    assert_close(
+        h_measure(&class0, &class1, 3.0, 1.5).h,
+        0.216697515573145,
+        1e-9,
+    );
+}
+
+#[test]
+fn perfect_separation_hull_has_only_its_vertices() {
+    let class0: Vec<f64> = (0..500).map(|i| 0.4 * i as f64 / 500.0).collect();
+    let class1: Vec<f64> = (0..500).map(|i| 0.6 + 0.4 * i as f64 / 500.0).collect();
+    let results = h_measure(&class0, &class1, 2.0, 2.0);
+    assert_eq!(results.convex_hull, vec![vec![0.0, 1.0], vec![1.0, 1.0]]);
+}
+
+#[test]
+fn convex_hull_is_concave_and_dominates_roc_curve() {
+    let separated = generated_scores((2.0, 6.0), (6.0, 2.0), 2000, 1600, 13);
+    let identical = generated_scores((4.0, 4.0), (4.0, 4.0), 500, 700, 7);
+    let cases = [
+        fixture_scores(),
+        (separated.class0, separated.class1),
+        (identical.class0, identical.class1),
+    ];
+    for (class0, class1) in cases {
+        let results = h_measure(&class0, &class1, 2.0, 2.0);
+        let mut hull = vec![vec![0.0, 0.0]];
+        hull.extend(results.convex_hull.iter().cloned());
+
+        // The slope strictly decreases from each hull edge to the next.
+        for w in hull.windows(3) {
+            let cross = (w[1][0] - w[0][0]) * (w[2][1] - w[0][1])
+                - (w[1][1] - w[0][1]) * (w[2][0] - w[0][0]);
+            assert!(cross < 0.0, "hull is not strictly concave at {:?}", w[1]);
+        }
+
+        // Every ROC point lies on or below the hull.
+        for point in &results.roc_curve {
+            let edge = hull
+                .windows(2)
+                .find(|e| e[0][0] <= point[0] && point[0] <= e[1][0])
+                .unwrap();
+            let dx = edge[1][0] - edge[0][0];
+            let hull_y = if dx == 0.0 {
+                edge[1][1]
+            } else {
+                edge[0][1] + (edge[1][1] - edge[0][1]) * (point[0] - edge[0][0]) / dx
+            };
+            assert!(point[1] <= hull_y + 1e-12, "{point:?} is above the hull");
+        }
+
+        // The cost thresholds run from 0 to 1 without decreasing.
+        assert_eq!(results.int_components[0][1], 0.0);
+        assert_eq!(results.int_components.last().unwrap()[0], 1.0);
+        assert!(results.int_components.iter().all(|row| row[1] <= row[0]));
+    }
 }
 
 #[test]
@@ -233,4 +302,79 @@ fn save_overwrites_existing_files() {
     assert_eq!(scores_csv.lines().next(), Some("idx,score"));
 
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn h_measure_with<C: CostDistribution>(class0: &[f64], class1: &[f64], cost: C) -> f64 {
+    let mut scores = BinaryClassScores {
+        class0: class0.to_vec(),
+        class1: class1.to_vec(),
+    };
+    HMeasure::new(cost, None, None).h_measure(&mut scores).h
+}
+
+fn bell_density(c: f64) -> f64 {
+    (-(c - 0.3).powi(2) / 0.045).exp() / 0.375
+}
+
+#[test]
+fn closure_cost_densities_match_independent_reference_values() {
+    // Expected values come from a separate implementation that integrates each density with a
+    // composite Simpson rule between the hull's cost thresholds.
+    let (class0, class1) = fixture_scores();
+    let wave = |c: f64| 1.0 + 0.8 * (4.0 * std::f64::consts::PI * c).cos();
+    assert_close(
+        h_measure_with(&class0, &class1, bell_density),
+        0.388823630496393,
+        1e-8,
+    );
+    assert_close(
+        h_measure_with(&class0, &class1, wave),
+        0.315544815804618,
+        1e-8,
+    );
+}
+
+#[test]
+fn beta_density_by_quadrature_matches_closed_form() {
+    let (class0, class1) = fixture_scores();
+    let beta_2_2 = |c: f64| 6.0 * c * (1.0 - c);
+    let closed_form = h_measure(&class0, &class1, 2.0, 2.0).h;
+    assert_close(
+        h_measure_with(&class0, &class1, beta_2_2),
+        closed_form,
+        1e-8,
+    );
+}
+
+#[test]
+fn cost_density_scale_does_not_matter() {
+    let (class0, class1) = fixture_scores();
+    let scaled = |c: f64| 100.0 * bell_density(c);
+    let expected = h_measure_with(&class0, &class1, bell_density);
+    assert_close(h_measure_with(&class0, &class1, scaled), expected, 1e-8);
+}
+
+struct UniformCost;
+
+impl CostDistribution for UniformCost {
+    fn pdf(&self, _cost: f64) -> f64 {
+        1.0
+    }
+    fn uc_integral(&self, lo: f64, hi: f64) -> f64 {
+        (hi * hi - lo * lo) / 2.0
+    }
+    fn u1mc_integral(&self, lo: f64, hi: f64) -> f64 {
+        (hi - lo) - (hi * hi - lo * lo) / 2.0
+    }
+}
+
+#[test]
+fn custom_distribution_with_closed_form_integrals() {
+    // A uniform cost density is Beta(1, 1), so this must reproduce that reference value.
+    let (class0, class1) = fixture_scores();
+    assert_close(
+        h_measure_with(&class0, &class1, UniformCost),
+        0.285532326169132,
+        1e-9,
+    );
 }

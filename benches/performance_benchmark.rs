@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 
 use hmeasure::{BetaParams, BinaryClassParams, BinaryClassScores, BinaryClassifierScores};
-use hmeasure::{CostRatioDensity, HMeasure};
+use hmeasure::{CostDistribution, CostRatioDensity, HMeasure};
 
 fn hmeasure_benchmark(cr: &mut Criterion) {
     let base = 100;
@@ -66,5 +66,53 @@ fn generate_scores(size: usize) -> (Vec<f64>, Vec<f64>) {
     (bcs.scores.class0, bcs.scores.class1)
 }
 
-criterion_group!(benches, hmeasure_benchmark);
+struct BetaByQuadrature(CostRatioDensity);
+
+impl CostDistribution for BetaByQuadrature {
+    fn pdf(&self, cost: f64) -> f64 {
+        self.0.pdf(cost)
+    }
+}
+
+fn beta_2_2() -> CostRatioDensity {
+    CostRatioDensity::new(BetaParams {
+        alpha: 2.0,
+        beta: 2.0,
+    })
+}
+
+// The same Beta(2, 2) cost density evaluated in closed form and by the default numerical quadrature.
+fn cost_distribution_benchmark(cr: &mut Criterion) {
+    let (class0, class1) = generate_scores(1600);
+    let fresh_scores = || BinaryClassScores {
+        class0: class0.clone(),
+        class1: class1.clone(),
+    };
+    let mut group = cr.benchmark_group("cost_distribution");
+    group.bench_function("beta_closed_form", |b| {
+        b.iter_batched(
+            fresh_scores,
+            |mut scores| {
+                HMeasure::new(beta_2_2(), None, None)
+                    .h_measure(&mut scores)
+                    .h
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.bench_function("beta_quadrature", |b| {
+        b.iter_batched(
+            fresh_scores,
+            |mut scores| {
+                HMeasure::new(BetaByQuadrature(beta_2_2()), None, None)
+                    .h_measure(&mut scores)
+                    .h
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.finish();
+}
+
+criterion_group!(benches, hmeasure_benchmark, cost_distribution_benchmark);
 criterion_main!(benches);
